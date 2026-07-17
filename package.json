@@ -1,0 +1,112 @@
+{
+  "name": "fizzim-vscode",
+  "displayName": "Fizzim FSM Editor",
+  "description": "Draw finite state machines and generate synthesizable Verilog/VHDL — a native VS Code editor for Fizzim (.fzm) diagrams.",
+  "version": "1.3.1",
+  "publisher": "caioplazas",
+  "license": "GPL-3.0-or-later",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#3b3fb0",
+    "theme": "dark"
+  },
+  "keywords": [
+    "fsm",
+    "finite state machine",
+    "verilog",
+    "vhdl",
+    "fizzim",
+    "hdl",
+    "fpga",
+    "rtl",
+    "state diagram"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CaioPlazas/fizzim-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CaioPlazas/fizzim-vscode/issues"
+  },
+  "homepage": "https://github.com/CaioPlazas/fizzim-vscode#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Visualization", "Other"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "fizzim.editor",
+        "displayName": "Fizzim FSM Editor",
+        "selector": [
+          { "filenamePattern": "*.fzm" }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "fizzim.newDiagram",
+        "title": "Fizzim: New Diagram"
+      }
+    ],
+    "configuration": {
+      "title": "Fizzim",
+      "properties": {
+        "fizzim.perlPath": {
+          "type": "string",
+          "default": "perl",
+          "description": "Path to the Perl interpreter used to run the code generator."
+        },
+        "fizzim.scriptPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional override for the Fizzim HDL code generator (fizzim.pl). Leave empty to use the copy bundled with the extension. It is invoked as `perl <scriptPath> -language <language>` with the .fzm fed on stdin (Perl must be installed)."
+        },
+        "fizzim.language": {
+          "type": "string",
+          "enum": ["verilog", "vhdl", "systemverilog"],
+          "default": "verilog",
+          "description": "Target HDL language for 'Generate HDL'."
+        },
+        "fizzim.darkMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Draw the diagram canvas on a dark background. Off (default) uses a white background regardless of the VS Code theme. Also toggleable from the editor toolbar."
+        },
+        "fizzim.defaultStateColor": {
+          "type": "string",
+          "default": "#000000",
+          "description": "Default color (hex) for newly created states. Also editable from the Preferences dialog."
+        },
+        "fizzim.defaultTransitionColor": {
+          "type": "string",
+          "default": "#000000",
+          "description": "Default color (hex) for newly created state transitions. Also editable from the Preferences dialog."
+        },
+        "fizzim.defaultLoopbackColor": {
+          "type": "string",
+          "default": "#000000",
+          "description": "Default color (hex) for newly created loopback transitions. Also editable from the Preferences dialog."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "npm run build:extension && npm run build:webview",
+    "build:extension": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --minify",
+    "build:webview": "esbuild src/webview/main.ts --bundle --platform=browser --outfile=dist/webview.js --minify",
+    "watch": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --watch & esbuild src/webview/main.ts --bundle --platform=browser --outfile=dist/webview.js --watch",
+    "test": "node --test --require ts-node/register src/fzm/*.test.ts src/webview/*.test.ts",
+    "package": "npx --yes @vscode/vsce package --no-dependencies -o fizzim-vscode.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.0"
+  }
+}
