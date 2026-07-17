@@ -3,7 +3,7 @@
   "displayName": "Fizzim FSM Editor",
   "description": "Draw finite state machines and generate synthesizable Verilog/VHDL — a native VS Code editor for Fizzim (.fzm) diagrams.",
   "version": "1.3.1",
-  "publisher": "caioplazas",
+  "publisher": "CaioPlazas",
   "license": "GPL-3.0-or-later",
   "icon": "icon.png",
   "galleryBanner": {
