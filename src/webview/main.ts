@@ -188,6 +188,7 @@ function main(): void {
   let marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
   let drag: DragState | null = null;
   let dragMoved = false;
+  let nudgeCommitTimer: ReturnType<typeof setTimeout> | null = null;
   let zoom = 1;
 
   const selKey = (s: Selection) => `${s.kind}:${s.index}`;
@@ -246,6 +247,18 @@ function main(): void {
       dragLabel: drag && drag.kind === 'attrLabel' ? drag.target : undefined,
     });
     updateCounts();
+  };
+  // Coalesces redraws to once per animation frame. High-polling-rate mice can
+  // fire mousemove well above 60Hz; without this each event would trigger a
+  // full canvas re-render, most of which the screen never has a chance to show.
+  let redrawScheduled = false;
+  const scheduleRedraw = () => {
+    if (redrawScheduled) return;
+    redrawScheduled = true;
+    requestAnimationFrame(() => {
+      redrawScheduled = false;
+      redraw();
+    });
   };
   // Push the current model back to the extension host, which writes it to the
   // TextDocument (making the tab dirty; Ctrl+S persists it to the .fzm file).
@@ -331,6 +344,25 @@ function main(): void {
   redraw();
   renderPageTabs();
 
+  // Re-crisps the canvas when devicePixelRatio changes - e.g. the VS Code
+  // window is dragged to a monitor with different display scaling. A
+  // matchMedia query for the current ratio fires 'change' the moment it stops
+  // matching (i.e. the ratio just changed); resolution match queries are a
+  // point-in-time snapshot, so we re-subscribe at the new ratio each time.
+  const watchDprChanges = () => {
+    const mq = window.matchMedia(`(resolution: ${dpr()}dppx)`);
+    mq.addEventListener(
+      'change',
+      () => {
+        resize();
+        redraw();
+        watchDprChanges();
+      },
+      { once: true }
+    );
+  };
+  watchDprChanges();
+
   canvas.tabIndex = 0;
   canvas.style.outline = 'none';
   canvas.focus();
@@ -358,6 +390,26 @@ function main(): void {
   // Redraw when the VS Code theme changes (it swaps the body class / CSS vars).
   const themeObserver = new MutationObserver(() => redraw());
   themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+
+  // Cursor feedback for what a click/drag would do here - no new interactions,
+  // just an affordance: resize cursors over a selected state's corner handles,
+  // a move cursor over a selected transition/loopback's curve handles, pointer
+  // over any other draggable object.
+  const STATE_HANDLE_CURSOR: Record<StateHandle, string> = {
+    tl: 'nwse-resize', br: 'nwse-resize', tr: 'nesw-resize', bl: 'nesw-resize',
+  };
+  const hoverCursor = (x: number, y: number): string => {
+    const tol = 6 / zoom; // ~6px on screen regardless of zoom, matching mousedown's hit tolerance
+    if (selection?.kind === 'state') {
+      const h = stateHandleAt(doc.states[selection.index], x, y, tol);
+      if (h) return STATE_HANDLE_CURSOR[h];
+    } else if (selection?.kind === 'transition') {
+      const sel = doc.transitions[selection.index];
+      const crossSide = sel.kind === 'transition' && !transitionOnPage(doc, sel, page) ? crossPageSide(doc, sel, page) : null;
+      if (transitionHandleAt(sel, x, y, tol, crossSide)) return 'move';
+    }
+    return hitTest(ctx, doc, page, x, y) ? 'pointer' : 'default';
+  };
 
   canvas.addEventListener('mousedown', (e) => {
     const { x, y } = toCanvasCoords(e);
@@ -442,6 +494,16 @@ function main(): void {
     redraw();
   });
 
+  // Cursor-only feedback, scoped to the canvas (unlike the drag-handling
+  // listener below, which is on window so a fast drag can continue past the
+  // canvas edge). Skips while a drag is in progress; that mousemove listener
+  // owns the cursor then (the browser just shows whatever it was last set to).
+  canvas.addEventListener('mousemove', (e) => {
+    if (drag) return;
+    const { x, y } = toCanvasCoords(e);
+    canvas.style.cursor = hoverCursor(x, y);
+  });
+
   window.addEventListener('mousemove', (e) => {
     if (!drag) return;
     const { x, y } = toCanvasCoords(e);
@@ -522,7 +584,7 @@ function main(): void {
       t.x = doc.preferences.grid ? snap(drag.origX + dx, g) : drag.origX + dx;
       t.y = doc.preferences.grid ? snap(drag.origY + dy, g) : drag.origY + dy;
     }
-    redraw();
+    scheduleRedraw();
   });
 
   window.addEventListener('mouseup', () => {
@@ -904,7 +966,11 @@ function main(): void {
       s.x0 += ux * step; s.y0 += uy * step; s.x1 += ux * step; s.y1 += uy * step;
       updateAttachedTransitions(doc, s.name);
       redraw();
-      commit();
+      // Debounce the commit so holding an arrow key (which can repeat at
+      // >100Hz) doesn't serialize+round-trip the whole document, and create
+      // an undo step, on every single pixel of movement.
+      if (nudgeCommitTimer) clearTimeout(nudgeCommitTimer);
+      nudgeCommitTimer = setTimeout(() => { nudgeCommitTimer = null; commit(); }, 300);
       return;
     }
 

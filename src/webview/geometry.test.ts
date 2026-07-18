@@ -101,6 +101,46 @@ test('recomputeLoopback preserves border indices and keeps control points at the
   assert.equal(t.startPt.x, getBorderPts(moved)[0].x);
 });
 
+test('recomputeLoopback does not compound growth across many resize events (regression: arm used to inflate on every drag)', () => {
+  // Repeatedly resizing (or moving) a state re-runs recomputeLoopback once per
+  // mousemove. The old implementation re-derived each control point's
+  // angle/length from the *previous* call's already-rounded points, and
+  // truncated the result - a bias that compounded over hundreds of events
+  // into a visibly growing loopback arm. The fix translates each control
+  // point by its anchor's exact delta instead, so arm length must stay
+  // constant no matter how many times this runs.
+  const s = makeState('IDLE', 100, 100, 230, 230);
+  const pts = getBorderPts(s);
+  const startStateIndex = 2, endStateIndex = 7;
+  const t: FzmLoopback = {
+    kind: 'loopback', name: 'loop0', state: 'IDLE',
+    startPt: pts[startStateIndex], endPt: pts[endStateIndex],
+    startCtrlPt: { x: pts[startStateIndex].x + 60, y: pts[startStateIndex].y - 40 },
+    endCtrlPt: { x: pts[endStateIndex].x - 40, y: pts[endStateIndex].y + 60 },
+    startStateIndex, endStateIndex, page: 1, color: -16777216, attributes: [],
+  };
+  const armLen = () => ({
+    s: Math.hypot(t.startCtrlPt.x - t.startPt.x, t.startCtrlPt.y - t.startPt.y),
+    e: Math.hypot(t.endCtrlPt.x - t.endPt.x, t.endCtrlPt.y - t.endPt.y),
+  });
+  const initial = armLen();
+
+  // Simulate 5 drag gestures of a corner resize handle: +1px x 30, then
+  // -1px x 30 (grow then shrink back), recomputing on every mousemove.
+  for (let gesture = 0; gesture < 5; gesture++) {
+    for (let i = 0; i < 60; i++) {
+      const d = i < 30 ? 1 : -1;
+      s.x1 += d;
+      s.y1 += d;
+      recomputeLoopback(t, s);
+    }
+  }
+
+  const final = armLen();
+  assert.equal(final.s, initial.s, `start arm must not drift, got ${initial.s} -> ${final.s}`);
+  assert.equal(final.e, initial.e, `end arm must not drift, got ${initial.e} -> ${final.e}`);
+});
+
 test('recomputeCrossPage docks the connector to the page edges and squares off the control points', () => {
   const a = makeState('A', 0, 0, 100, 100);
   const b = makeState('B', 300, 0, 400, 100);

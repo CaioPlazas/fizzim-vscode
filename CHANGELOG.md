@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.1
+
+Bug fix and interaction polish. No change to the `.fzm` format or the
+generated Verilog/VHDL (verified byte-identical against the reference corpus).
+
+- **Fixed: resizing a state with a loopback attached made the loopback grow.**
+  Each resize event was re-deriving the loopback's control points from the
+  previous, already-rounded points; the rounding bias compounded over a drag
+  into a visibly inflating arm. The loopback now translates rigidly with its
+  anchor point instead, so its size stays put no matter how long you drag.
+- Snappier drags: redraws are now batched to one per animation frame instead
+  of one per mouse-move event.
+- Holding an arrow key to nudge a state no longer creates an undo step (and
+  round-trips the whole document) on every single pixel of movement.
+- The canvas re-crisps automatically if you drag the window to a monitor with
+  different display scaling.
+- Resize and pointer cursors now show up over drag handles and objects.
+
 ## 1.4.0
 
 Two rendering/interaction refinements. No change to the `.fzm` format or the

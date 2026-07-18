@@ -172,24 +172,31 @@ export function recomputeStub(t: FzmTransition, startState: FzmState): void {
   t.pageS = { x: Math.trunc(t.startPt.x + len * Math.cos(angle)), y: Math.trunc(t.startPt.y - len * Math.sin(angle)) };
 }
 
+// Re-anchors a loopback when its state moves/resizes. Java's updateObj
+// re-derives each control point from the border point's angle/length every
+// call - re-rounding on every call, which over many resize mousemove events
+// (or repeated state moves) compounds into visible arm growth. We instead
+// translate each control point by the same delta its border anchor point
+// just moved by: this keeps the arm's shape rigid (zero drift, by
+// construction) rather than re-deriving it from rounded trig each time, and
+// matches the spirit of Java's own moveEndPts "fast path" that preserves
+// deltas exactly this way for ordinary transitions.
 export function recomputeLoopback(t: FzmLoopback, state: FzmState): void {
   const borderPts = getBorderPts(state);
-  const angleS = getAngle(t.startCtrlPt, t.startPt);
-  const angleE = getAngle(t.endCtrlPt, t.endPt);
-  const lenS = Math.round(Math.hypot(t.startCtrlPt.x - t.startPt.x, t.startCtrlPt.y - t.startPt.y));
-  const lenE = Math.round(Math.hypot(t.endCtrlPt.x - t.endPt.x, t.endCtrlPt.y - t.endPt.y));
-
-  t.startPt = borderPts[t.startStateIndex];
-  t.endPt = borderPts[t.endStateIndex];
+  const newStartPt = borderPts[t.startStateIndex];
+  const newEndPt = borderPts[t.endStateIndex];
 
   t.startCtrlPt = {
-    x: Math.trunc(t.startPt.x + lenS * Math.cos(angleS)),
-    y: Math.trunc(t.startPt.y - lenS * Math.sin(angleS)),
+    x: t.startCtrlPt.x + (newStartPt.x - t.startPt.x),
+    y: t.startCtrlPt.y + (newStartPt.y - t.startPt.y),
   };
   t.endCtrlPt = {
-    x: Math.trunc(t.endPt.x + lenE * Math.cos(angleE)),
-    y: Math.trunc(t.endPt.y - lenE * Math.sin(angleE)),
+    x: t.endCtrlPt.x + (newEndPt.x - t.endPt.x),
+    y: t.endCtrlPt.y + (newEndPt.y - t.endPt.y),
   };
+
+  t.startPt = newStartPt;
+  t.endPt = newEndPt;
 }
 
 // How far this cross-page transition is staggered from its siblings, porting
