@@ -1,0 +1,645 @@
+/* Fizzim editor webview styles.
+ *
+ * v2 Phase C: the menu bar (a port of Swing's JMenuBar) is gone — its items are
+ * VS Code commands now, reachable from the editor title bar and the Command
+ * Palette. What's styled here is the canvas and the two slim strips around it.
+ *
+ * Tokens first: rules below reference these rather than reaching for --vscode-*
+ * directly, so a restyle is one edit.
+ */
+
+:root {
+  --fzm-surface: var(--vscode-editorWidget-background, #252526);
+  --fzm-ink: var(--vscode-foreground, #ccc);
+  --fzm-border: var(--vscode-editorWidget-border, #454545);
+  --fzm-hover: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+  --fzm-muted: var(--vscode-descriptionForeground, #999);
+  --fzm-accent: var(--vscode-focusBorder, #0e639c);
+  --fzm-font: var(--vscode-font-family, sans-serif);
+  --fzm-strip-h: 28px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--vscode-editor-background, #1e1e1e);
+  color: var(--vscode-editor-foreground, #ccc);
+  font-family: var(--fzm-font);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Toolbar: canvas-local view state only ---------------------------------
+   Anything that acts on the document rather than the view belongs in the title
+   bar or the palette, not here. */
+
+#toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--fzm-strip-h);
+  padding: 0 8px;
+  background: var(--fzm-surface);
+  border-bottom: 1px solid var(--fzm-border);
+  user-select: none;
+}
+
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tb-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--fzm-border);
+}
+
+/* An action button: icon + label, quiet until hovered. Labelled rather than
+   icon-only — "Generate HDL" is the reason this editor exists and shouldn't be
+   a glyph you have to hover to identify. */
+.tb-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fzm-ink);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tb-action:hover {
+  background: var(--fzm-hover);
+}
+
+.tb-action:active {
+  background: var(--fzm-hover);
+  transform: translateY(0.5px);
+}
+
+.tb-action .codicon {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.tb-action:focus-visible,
+.tb-toggle input:focus-visible,
+.sb-btn:focus-visible {
+  outline: 1px solid var(--fzm-accent);
+  outline-offset: 1px;
+}
+
+.tb-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--fzm-ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tb-toggle:hover {
+  background: var(--fzm-hover);
+}
+
+.tb-toggle input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--fzm-accent);
+}
+
+/* ---- Edit bar --------------------------------------------------------------
+   A fixed strip below the toolbar that edits the selected object's common
+   fields live. Horizontal; if a state has many outputs it scrolls sideways
+   rather than breaking the layout. */
+
+#editbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--fzm-strip-h);
+  padding: 0 10px;
+  background: var(--fzm-surface);
+  border-bottom: 1px solid var(--fzm-border);
+  font-size: 12px;
+  user-select: none;
+}
+
+#editbar:empty {
+  display: none;
+}
+
+/* Expanded: the bar grows downward and its fields wrap to rows, instead of the
+   single row scrolling sideways. Capped so a huge state can't eat the canvas. */
+#editbar.expanded {
+  align-items: flex-start;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+/* The fields; the right-side actions live outside this so they stay put.
+   Collapsed overflow is paged via the ‹ › arrows, not a scrollbar, so the
+   scrollbar is hidden and scrolling is driven from JS. */
+.eb-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+#editbar.expanded .eb-content {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  row-gap: 7px;
+  white-space: normal;
+  overflow-x: visible;
+}
+
+.eb-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+#editbar.expanded .eb-actions {
+  align-self: flex-start;
+  padding-top: 1px;
+}
+
+.eb-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fzm-ink);
+  cursor: pointer;
+}
+
+.eb-icon:hover {
+  background: var(--fzm-hover);
+}
+
+.eb-icon.active {
+  color: var(--fzm-accent);
+}
+
+/* Pager arrows: step through the fields a page at a time when the collapsed row
+   overflows. Hidden by JS when everything fits or the bar is expanded. */
+.eb-pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--fzm-border);
+  border-radius: 3px;
+  background: var(--fzm-surface);
+  color: var(--fzm-ink);
+  cursor: pointer;
+}
+
+.eb-pager:hover:not(:disabled) {
+  background: var(--fzm-hover);
+}
+
+.eb-pager:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.eb-kind {
+  font-weight: 600;
+  color: var(--fzm-ink);
+}
+
+.eb-hint {
+  color: var(--fzm-muted);
+}
+
+.eb-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.eb-label {
+  color: var(--fzm-muted);
+}
+
+.eb-input {
+  box-sizing: content-box;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--vscode-input-border, var(--fzm-border));
+  border-radius: 3px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, var(--fzm-ink));
+  font: inherit;
+  outline: none;
+}
+
+.eb-input:focus {
+  border-color: var(--fzm-accent);
+}
+
+.eb-select {
+  height: 22px;
+  cursor: pointer;
+}
+
+.eb-check {
+  accent-color: var(--fzm-accent);
+  margin: 0;
+}
+
+.eb-color {
+  width: 24px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--fzm-border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+
+.eb-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 16px;
+  background: var(--fzm-border);
+}
+
+.eb-spacer {
+  flex: 1 1 auto;
+}
+
+.eb-more {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--vscode-button-border, var(--fzm-border));
+  border-radius: 3px;
+  background: var(--vscode-button-secondaryBackground, var(--fzm-hover));
+  color: var(--vscode-button-secondaryForeground, var(--fzm-ink));
+  font: inherit;
+  cursor: pointer;
+}
+
+.eb-more:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--fzm-hover));
+}
+
+/* ---- Canvas ---------------------------------------------------------------- */
+
+#canvas-wrap {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+/* ---- Object dialog ---------------------------------------------------------
+   A centered modal opened by double-click / Enter on the selected object. The
+   canvas stays purely spatial (select / move / resize); all value editing
+   happens here, where the mode is unmistakable and a stray click can't destroy
+   anything. Working-copy semantics: OK applies, Cancel discards. */
+
+.objd-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.objd-box {
+  min-width: 320px;
+  max-width: 420px;
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 0 0 12px;
+  background: var(--fzm-surface);
+  color: var(--fzm-ink);
+  border: 1px solid var(--fzm-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+}
+
+.objd-title {
+  padding: 12px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  border-bottom: 1px solid var(--fzm-border);
+}
+
+.objd-buttons {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+
+/* "All attributes…" sits on the left; Cancel/OK on the right. */
+.objd-advanced {
+  margin-right: auto;
+}
+
+.objd-btn {
+  padding: 4px 14px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.objd-primary {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+
+.objd-primary:hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background, #0e639c));
+}
+
+.objd-secondary {
+  background: var(--vscode-button-secondaryBackground, var(--fzm-hover));
+  color: var(--vscode-button-secondaryForeground, var(--fzm-ink));
+}
+
+.objd-secondary:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--fzm-hover));
+}
+
+.objd-btn:focus-visible {
+  outline: 1px solid var(--fzm-accent);
+  outline-offset: 1px;
+}
+
+/* ---- Form fields (used by the dialog) -------------------------------------- */
+
+.fld-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--fzm-border);
+}
+
+.fld-section:last-of-type {
+  border-bottom: none;
+}
+
+.fld-h {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--fzm-muted);
+  margin-bottom: 10px;
+}
+
+.fld-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.fld-row:last-child {
+  margin-bottom: 0;
+}
+
+.fld-label {
+  flex: 0 0 88px;
+  color: var(--fzm-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fld-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--vscode-input-border, var(--fzm-border));
+  border-radius: 3px;
+  background: var(--vscode-input-background, #3c3c3c);
+  color: var(--vscode-input-foreground, var(--fzm-ink));
+  font: inherit;
+  outline: none;
+}
+
+.fld-input:focus {
+  border-color: var(--fzm-accent);
+}
+
+.fld-textarea {
+  height: auto;
+  padding: 4px 6px;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.fld-check {
+  accent-color: var(--fzm-accent);
+  margin: 0;
+}
+
+.fld-color {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fld-color input[type="color"] {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--fzm-border);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+
+.fld-size {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fzm-muted);
+}
+
+.fld-num {
+  width: 100%;
+  text-align: right;
+}
+
+/* ---- Page tabs -------------------------------------------------------------
+   Shaped like VS Code's editor tabs (flat, full-height, active tab marked by a
+   top border) rather than the spreadsheet tabs v1 had. */
+
+#page-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  /* Fall back to a token that follows the theme, never to a fixed color — a
+     hard-coded dark default paints a black strip under a light theme. */
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--fzm-surface));
+  border-top: 1px solid var(--fzm-border);
+  user-select: none;
+}
+
+#page-tabs:empty {
+  display: none;
+}
+
+#page-tabs .page-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--fzm-strip-h);
+  padding: 0 10px;
+  border: none;
+  border-right: 1px solid var(--fzm-border);
+  border-top: 1px solid transparent;
+  background: var(--vscode-tab-inactiveBackground, var(--fzm-surface));
+  color: var(--vscode-tab-inactiveForeground, var(--fzm-muted));
+  font: inherit;
+  cursor: pointer;
+}
+
+#page-tabs .page-tab:hover {
+  background: var(--vscode-tab-hoverBackground, var(--fzm-hover));
+}
+
+#page-tabs .page-tab.active {
+  background: var(--vscode-tab-activeBackground, var(--vscode-editor-background, #1f1f1f));
+  color: var(--vscode-tab-activeForeground, var(--fzm-ink));
+  border-top-color: var(--fzm-accent);
+}
+
+/* The close affordance: hidden until the tab is hovered or active, like VS
+   Code's own tabs. v1 had a bare " ×" text node always visible. */
+#page-tabs .tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  opacity: 0;
+  font-size: 13px;
+  line-height: 1;
+}
+
+#page-tabs .page-tab:hover .tab-close,
+#page-tabs .page-tab.active .tab-close {
+  opacity: 0.8;
+}
+
+#page-tabs .tab-close:hover {
+  background: var(--fzm-hover);
+  opacity: 1;
+}
+
+#page-tabs .page-add {
+  border-right: none;
+  color: var(--fzm-muted);
+}
+
+/* ---- Status bar ------------------------------------------------------------
+   v1 had nowhere to say what was selected, so the object counts were wedged
+   into the right edge of the menu bar. */
+
+#statusbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 10px;
+  background: var(--fzm-surface);
+  border-top: 1px solid var(--fzm-border);
+  color: var(--fzm-muted);
+  font-size: 11px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.sb-spacer {
+  flex: 1 1 auto;
+}
+
+#status-selection {
+  color: var(--fzm-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status-pos {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The zoom control. A quiet status-bar button opening our own DOM menu, rather
+   than a native <select>: VS Code renders its own dropdowns, so a browser
+   select reads as a web form control dropped into the editor. It also sits
+   beside the value it changes instead of duplicating it in the toolbar. */
+.sb-btn {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fzm-muted);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.sb-btn:hover {
+  background: var(--fzm-hover);
+  color: var(--fzm-ink);
+}
+
+.sb-chevron {
+  font-size: 13px;
+  line-height: 1;
+  /* The glyph carries its own leading; nudge it onto the text baseline. */
+  transform: translateY(-3px);
+  opacity: 0.7;
+}

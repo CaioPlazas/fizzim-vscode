@@ -4,3 +4,6 @@ out/
 *.vsix
 samples/*.v
 samples/*.vhd
+
+# Copied out of node_modules by `npm run build:icons` (part of `npm run build`).
+media/codicons/

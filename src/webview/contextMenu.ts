@@ -12,7 +12,14 @@ function closeMenu(): void {
   }
 }
 
-export function showContextMenu(clientX: number, clientY: number, items: MenuItem[]): void {
+export interface MenuOptions {
+  /** Align the menu's bottom edge to clientY (for a control on the bottom edge). */
+  above?: boolean;
+  /** Mark one item as the current value. */
+  checked?: string;
+}
+
+export function showContextMenu(clientX: number, clientY: number, items: MenuItem[], opts: MenuOptions = {}): void {
   closeMenu();
   if (items.length === 0) return;
 
@@ -35,6 +42,10 @@ export function showContextMenu(clientX: number, clientY: number, items: MenuIte
     el.textContent = item.label;
     el.style.padding = '4px 12px';
     el.style.cursor = 'pointer';
+    if (opts.checked !== undefined && item.label === opts.checked) {
+      el.style.fontWeight = '600';
+      el.style.background = 'var(--vscode-list-inactiveSelectionBackground, transparent)';
+    }
     el.addEventListener('mouseenter', () => {
       el.style.background = 'var(--vscode-menu-selectionBackground, #094771)';
     });
@@ -51,6 +62,18 @@ export function showContextMenu(clientX: number, clientY: number, items: MenuIte
 
   document.body.appendChild(menu);
   currentMenu = menu;
+
+  // Keep the menu on screen. Without this, right-clicking near the bottom or
+  // right edge of the canvas opened a menu running off the viewport — and a
+  // menu anchored to the status bar (which sits on the bottom edge) would open
+  // entirely off-screen.
+  const rect = menu.getBoundingClientRect();
+  if (opts.above || rect.bottom > window.innerHeight) {
+    menu.style.top = `${Math.max(0, clientY - rect.height)}px`;
+  }
+  if (rect.right > window.innerWidth) {
+    menu.style.left = `${Math.max(0, clientX - rect.width)}px`;
+  }
 
   const dismiss = () => {
     closeMenu();

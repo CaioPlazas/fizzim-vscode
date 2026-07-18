@@ -1,7 +1,7 @@
 import type { FzmDocument } from '../fzm/model';
 import { parseFzm } from '../fzm/parser';
 import { serializeFzm } from '../fzm/serializer';
-import { AttrLabelTarget, computeBounds, hitAttrLabel, render, transitionOnPage } from './render';
+import { attrIsVisible, AttrLabelTarget, computeBounds, hitAttrLabel, render, transitionOnPage } from './render';
 import { crossPageSide, CurveHandle, hitTest, normRect, objectsInBox, Selection, StateHandle, stateHandleAt, transitionHandleAt } from './hitTest';
 import { nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
 import {
@@ -34,6 +34,8 @@ import { promptText } from './textInput';
 import { Field, showConfirm, showForm, showMessage } from './formDialog';
 import { showAttributeDialog } from './attributeDialog';
 import { showGlobalEditor } from './globalEditor';
+import { readTheme, SurfaceMode } from './theme';
+import { buildEditBar } from './editBar';
 
 declare global {
   interface Window {
@@ -184,6 +186,7 @@ function main(): void {
   let page = 1;
   let doc = parseFzm(initialText);
   let selection: Selection | null = null;
+  let hover: Selection | null = null; // what the cursor is over (view-only)
   let group: Selection[] = []; // multi-selection (states + text)
   let marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
   let drag: DragState | null = null;
@@ -191,14 +194,14 @@ function main(): void {
   let zoom = 1;
 
   const selKey = (s: Selection) => `${s.kind}:${s.index}`;
+  const selKeyOrNull = (s: Selection | null) => (s ? selKey(s) : '');
   const inGroup = (s: Selection) => group.some((g) => selKey(g) === selKey(s));
 
-  // The diagram canvas uses a fixed white background by default, independent of
-  // the VS Code theme (so it looks like paper / the original Fizzim). "Dark mode"
-  // (toolbar toggle, persisted to the fizzim.darkMode setting) switches it to a
-  // dark palette. render.ts maps default-black shapes to `fg` so they stay visible.
-  let darkMode = (window as unknown as { __FZM_DARK__?: boolean }).__FZM_DARK__ === true;
-  const themeColors = () => (darkMode ? { fg: '#d4d4d4', bg: '#1e1e1e' } : { fg: '#000000', bg: '#ffffff' });
+  // The canvas surface (see theme.ts): white "paper" by default, or the live VS
+  // Code theme when the user opts in. A view preference, not a document one, so
+  // it round-trips through the fizzim.canvasSurface setting via the host.
+  let surface: SurfaceMode =
+    (window as unknown as { __FZM_SURFACE__?: SurfaceMode }).__FZM_SURFACE__ === 'theme' ? 'theme' : 'paper';
 
   // Default colors for newly created objects (Fizzim's Pref defaults). Kept
   // outside the .fzm (app-level, like Fizzim) — seeded from the fizzim.default*
@@ -210,31 +213,88 @@ function main(): void {
     loopbackColor: hexToColorInt(rawDefaults.loopbackColor ?? '#000000'),
   };
 
-  // The canvas is a true pixel surface at the page resolution (content-expanded)
-  // times the zoom factor. Setting the CSS size equal to the buffer size makes
-  // it display 1:1 and scroll inside #canvas-wrap, instead of being squished to
-  // fit the viewport.
+  // The canvas is laid out at the page resolution (content-expanded) times the
+  // zoom factor, in CSS pixels, so it displays 1:1 and scrolls inside
+  // #canvas-wrap instead of being squished to fit the viewport.
+  //
+  // The *buffer* is that size times the device pixel ratio: on a HiDPI or
+  // fractionally-scaled display a CSS pixel is not a device pixel, and sizing
+  // the buffer in CSS pixels (as this did until v2) meant the browser resampled
+  // every stroke on the way to the screen - the single biggest reason the
+  // diagram looked soft. render() scales its transform by zoom x dpr to match.
+  // Mouse math is unaffected: getBoundingClientRect is CSS pixels either way.
+  const dpr = () => window.devicePixelRatio || 1;
   const resize = () => {
     const { width, height } = computeBounds(doc, page);
     const w = Math.round(width * zoom);
     const h = Math.round(height * zoom);
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = Math.round(w * dpr());
+    canvas.height = Math.round(h * dpr());
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
   };
-  const countsEl = document.getElementById('counts');
+  // --- Status bar. v1 had nowhere to put this, so the counts were wedged into
+  // the menu bar's right edge and the selection was never described at all.
+  const countsEl = document.getElementById('status-counts');
+  const selectionEl = document.getElementById('status-selection');
+  const posEl = document.getElementById('status-pos');
+  const zoomBtn = document.getElementById('zoom-btn');
+
+  // What's selected, in the words the user thinks in ("state IDLE") rather than
+  // the model's ("state index 3").
+  const describeSelection = (): string => {
+    if (group.length > 1) return `${group.length} objects selected`;
+    if (!selection) return '';
+    if (selection.kind === 'state') {
+      const s = doc.states[selection.index];
+      if (!s) return '';
+      const outs = s.attributes.filter((a) => a.name !== 'name' && attrIsVisible(a)).length;
+      return `state ${s.name}${s.reset ? ' · reset' : ''}${outs ? ` · ${outs} output${outs > 1 ? 's' : ''}` : ''}`;
+    }
+    if (selection.kind === 'transition') {
+      const t = doc.transitions[selection.index];
+      if (!t) return '';
+      const eq = t.attributes.find((a) => a.name === 'equation')?.value;
+      const label = t.kind === 'loopback' ? `loopback on ${t.state}` : `${t.startState} → ${t.endState}`;
+      return eq ? `${label} · ${eq}` : label;
+    }
+    const txt = doc.texts[selection.index];
+    return txt?.isGlobalTable ? 'global table' : 'text';
+  };
+
+  // A transient status-bar note (e.g. after a delete), shown only while nothing
+  // is selected — the moment the user selects something, describeSelection wins.
+  // The safety net for accidental deletes: it says what vanished and that Ctrl+Z
+  // brings it back.
+  let flashMsg = '';
+  let flashTimer = 0;
+  const flashStatus = (msg: string) => {
+    flashMsg = msg;
+    clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => { flashMsg = ''; updateCounts(); }, 5000);
+    updateCounts();
+  };
+
   const updateCounts = () => {
-    if (!countsEl) return;
     const s = doc.states.filter((o) => o.page === page).length;
     const t = doc.transitions.filter((o) => o.page === page).length;
     const pageInfo = doc.tabs.length > 1 ? ` · page ${page}/${doc.tabs.length}` : '';
-    countsEl.textContent = `${s} states, ${t} transitions${pageInfo}`;
+    if (countsEl) countsEl.textContent = `${s} states, ${t} transitions${pageInfo}`;
+    if (selectionEl) selectionEl.textContent = describeSelection() || flashMsg;
+    // The button shows the live zoom, including values no preset covers (Fit, or
+    // a Ctrl+wheel landing on 137%). The chevron is markup, so only the number
+    // is replaced.
+    if (zoomBtn) zoomBtn.childNodes[0].textContent = `${Math.round(zoom * 100)}%`;
   };
+
+  // Assigned once the edit bar is built (below). A no-op until then so redraw()
+  // can call it unconditionally; it only rebuilds when the selection identity
+  // changes, so calling it every redraw is cheap and never steals focus.
+  let refreshEditBar = () => {};
+
   const redraw = () => {
-    const { fg, bg } = themeColors();
     render(ctx, doc, page, selection, {
-      zoom, fg, bg, group, marquee,
+      zoom, theme: readTheme(surface), dpr: dpr(), group, marquee, hover,
       fontPx: doc.preferences.fontSize,
       fontName: doc.preferences.fontName,
       lineWidth: doc.preferences.lineWidth,
@@ -242,6 +302,7 @@ function main(): void {
       dragLabel: drag && drag.kind === 'attrLabel' ? drag.target : undefined,
     });
     updateCounts();
+    refreshEditBar();
   };
   // Push the current model back to the extension host, which writes it to the
   // TextDocument (making the tab dirty; Ctrl+S persists it to the .fzm file).
@@ -262,6 +323,7 @@ function main(): void {
       tab.addEventListener('click', () => {
         page = i + 1;
         selection = null;
+        hover = null; // whatever was under the cursor isn't on this page
         group = [];
         marquee = null;
         drag = null;
@@ -270,9 +332,9 @@ function main(): void {
         renderPageTabs();
       });
       const del = document.createElement('span');
-      del.textContent = ' ×';
+      del.textContent = '×';
+      del.className = 'tab-close';
       del.title = 'Delete this page';
-      del.style.cursor = 'pointer';
       del.addEventListener('click', (ev) => {
         ev.stopPropagation(); // don't also switch to the page
         if (doc.tabs.length <= 1) { void showMessage('Cannot delete the last page.'); return; }
@@ -309,7 +371,7 @@ function main(): void {
     // "+" adds a new page and switches to it.
     const add = document.createElement('button');
     add.textContent = '+';
-    add.className = 'page-tab';
+    add.className = 'page-tab page-add';
     add.title = 'Add page';
     add.addEventListener('click', () => {
       doc.tabs.push(`Page ${doc.tabs.length + 1}`);
@@ -355,10 +417,27 @@ function main(): void {
   const themeObserver = new MutationObserver(() => redraw());
   themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
 
+  const TOL = () => 6 / zoom; // ~6px on screen regardless of zoom
+
+  // The handle of the *selected* object at (x, y), if any. Selected objects draw
+  // handles on top of everything, so both mousedown (to start a drag) and
+  // mousemove (to pick a cursor) have to agree on where they are — hence one
+  // helper rather than two copies that can drift.
+  const handleAt = (x: number, y: number): StateHandle | CurveHandle | null => {
+    if (selection?.kind === 'state') return stateHandleAt(doc.states[selection.index], x, y, TOL());
+    if (selection?.kind === 'transition') {
+      const sel = doc.transitions[selection.index];
+      // A cross-page transition only exposes the four handles on this page.
+      const crossSide = sel.kind === 'transition' && !transitionOnPage(doc, sel, page) ? crossPageSide(doc, sel, page) : null;
+      return transitionHandleAt(sel, x, y, TOL(), crossSide);
+    }
+    return null;
+  };
+
   canvas.addEventListener('mousedown', (e) => {
     const { x, y } = toCanvasCoords(e);
     dragMoved = false;
-    const tol = 6 / zoom; // ~6px on screen regardless of zoom
+    const tol = TOL();
 
     // Attribute labels (state name, outputs, equation, priority, …) are grabbed
     // before shapes/handles, matching Java — clicking the text moves just that
@@ -376,24 +455,17 @@ function main(): void {
 
     // If something is already selected, its drawn handles take priority so you
     // can grab a corner (resize) or a curve handle (reshape).
-    if (selection?.kind === 'state') {
-      const h = stateHandleAt(doc.states[selection.index], x, y, tol);
-      if (h) {
-        const s = doc.states[selection.index];
-        drag = { kind: 'resize', index: selection.index, handle: h, startMouseX: x, startMouseY: y, origX0: s.x0, origY0: s.y0, origX1: s.x1, origY1: s.y1 };
-        redraw();
-        return;
-      }
-    } else if (selection?.kind === 'transition') {
-      const sel = doc.transitions[selection.index];
-      // A cross-page transition only exposes the four handles on this page.
-      const crossSide = sel.kind === 'transition' && !transitionOnPage(doc, sel, page) ? crossPageSide(doc, sel, page) : null;
-      const h = transitionHandleAt(sel, x, y, tol, crossSide);
-      if (h) {
-        drag = { kind: 'curve', index: selection.index, handle: h };
-        redraw();
-        return;
-      }
+    const grabbed = handleAt(x, y);
+    if (grabbed && selection?.kind === 'state') {
+      const s = doc.states[selection.index];
+      drag = { kind: 'resize', index: selection.index, handle: grabbed as StateHandle, startMouseX: x, startMouseY: y, origX0: s.x0, origY0: s.y0, origX1: s.x1, origY1: s.y1 };
+      redraw();
+      return;
+    }
+    if (grabbed && selection?.kind === 'transition') {
+      drag = { kind: 'curve', index: selection.index, handle: grabbed as CurveHandle };
+      redraw();
+      return;
     }
 
     const hit = hitTest(ctx, doc, page, x, y);
@@ -435,6 +507,32 @@ function main(): void {
       drag = { kind: 'marquee', startMouseX: x, startMouseY: y };
       marquee = { x0: x, y0: y, x1: x, y1: y };
     }
+    redraw();
+  });
+
+  // Hover: what's under the cursor when nothing is being dragged. The v1 canvas
+  // never reacted to the mouse until you pressed a button, which is most of why
+  // it felt inert. Only redraws when the answer actually changes.
+  const hoverCursor = (h: Selection | null, handle: StateHandle | CurveHandle | null): string => {
+    if (handle === 'tl' || handle === 'br') return 'nwse-resize';
+    if (handle === 'tr' || handle === 'bl') return 'nesw-resize';
+    if (handle) return 'grab'; // a curve endpoint / control point
+    return h ? 'move' : 'default';
+  };
+  canvas.addEventListener('mousemove', (e) => {
+    if (drag) return;
+    const { x, y } = toCanvasCoords(e);
+    if (posEl) posEl.textContent = `${Math.round(x)}, ${Math.round(y)}`;
+    const next = hitTest(ctx, doc, page, x, y);
+    canvas.style.cursor = hoverCursor(next, handleAt(x, y));
+    if (selKeyOrNull(next) === selKeyOrNull(hover)) return;
+    hover = next;
+    redraw();
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (posEl) posEl.textContent = '';
+    if (!hover) return;
+    hover = null;
     redraw();
   });
 
@@ -527,17 +625,28 @@ function main(): void {
     drag = null;
   });
 
+  // A short human description of a selected object, for the delete flash.
+  const describeObject = (sel: Selection): string => {
+    if (sel.kind === 'state') return `state ${doc.states[sel.index]?.name ?? ''}`.trim();
+    if (sel.kind === 'transition') return doc.transitions[sel.index]?.kind === 'loopback' ? 'loopback' : 'transition';
+    return 'text';
+  };
+
   const deleteFromMenu = (sel: Selection) => {
+    const what = describeObject(sel);
     deleteSelection(doc, sel);
     selection = null;
+    hover = null; // its index now points at a different object, or none
     redraw();
     commit();
+    flashStatus(`Deleted ${what} — press Ctrl+Z to undo`);
   };
 
   // Deletes the current selection or multi-selection (shared by the Delete key
   // and the Edit → Delete menu item).
   const deleteSelected = () => {
     if (group.length > 0) {
+      const n = group.length;
       const names = new Set(group.filter((g) => g.kind === 'state').map((g) => doc.states[g.index].name));
       const textIdx = group.filter((g) => g.kind === 'text').map((g) => g.index).sort((a, b) => b - a);
       doc.states = doc.states.filter((s) => !names.has(s.name));
@@ -547,13 +656,18 @@ function main(): void {
       for (const i of textIdx) if (!doc.texts[i]?.isGlobalTable) doc.texts.splice(i, 1);
       group = [];
       selection = null;
+      hover = null; // indices shifted under it
       redraw();
       commit();
+      flashStatus(`Deleted ${n} objects — press Ctrl+Z to undo`);
     } else if (selection) {
+      const what = describeObject(selection);
       deleteSelection(doc, selection);
       selection = null;
+      hover = null;
       redraw();
       commit();
+      flashStatus(`Deleted ${what} — press Ctrl+Z to undo`);
     }
   };
 
@@ -786,7 +900,7 @@ function main(): void {
       }
     } else if (hit.kind === 'state') {
       const state = doc.states[hit.index];
-      items.push({ label: 'Edit State Properties', action: () => openStateDialog(hit.index) });
+      items.push({ label: 'Edit State Properties…', action: () => openProperties(hit) });
       items.push({
         label: 'Add Loopback Transition',
         action: () => {
@@ -842,12 +956,12 @@ function main(): void {
     } else if (hit.kind === 'transition') {
       const isLoop = doc.transitions[hit.index].kind === 'loopback';
       items.push({
-        label: isLoop ? 'Edit Loopback Transition Properties' : 'Edit State Transition Properties',
-        action: () => openTransitionDialog(hit.index),
+        label: isLoop ? 'Edit Loopback Properties…' : 'Edit Transition Properties…',
+        action: () => openProperties(hit),
       });
       items.push({ label: isLoop ? 'Delete Loopback' : 'Delete Transition', action: () => deleteFromMenu(hit) });
     } else if (hit.kind === 'text' && !doc.texts[hit.index].isGlobalTable) {
-      items.push({ label: 'Edit Text', action: () => openTextDialog(hit.index) });
+      items.push({ label: 'Edit Text…', action: () => openProperties(hit) });
       // Move a free-text object to another page (whole group if multi-selected).
       doc.tabs.forEach((tabName, ti) => {
         const targetPage = ti + 1;
@@ -903,6 +1017,14 @@ function main(): void {
       return;
     }
 
+    // Enter opens the property dialog for the current selection — the
+    // keyboard path to the same modal double-click opens.
+    if (e.key === 'Enter' && !inField && selection && group.length === 0) {
+      e.preventDefault();
+      if (!(selection.kind === 'text' && doc.texts[selection.index]?.isGlobalTable)) openProperties(selection);
+      return;
+    }
+
     // Forward undo/redo to the extension host: when the webview has focus, the
     // keystroke wouldn't otherwise reach VS Code's text-document undo stack.
     if (!inField && (e.ctrlKey || e.metaKey)) {
@@ -932,32 +1054,50 @@ function main(): void {
     }
   });
 
+  // Two editing surfaces, no overlap: the edit bar (always visible, common
+  // fields, live) and — for the rare full-attribute edit — the complete property
+  // dialog opened here. Double-click / Enter / right-click "Properties" all reach
+  // it; a label counts as its parent object (labels are for moving, not editing
+  // in place). No nested dialogs: this IS the full editor.
+  const openProperties = (sel: Selection) => {
+    if (sel.kind === 'state') openStateDialog(sel.index);
+    else if (sel.kind === 'transition') openTransitionDialog(sel.index);
+    else if (sel.kind === 'text' && !doc.texts[sel.index]?.isGlobalTable) openTextDialog(sel.index);
+  };
+
   canvas.addEventListener('dblclick', (e) => {
     const { x, y } = toCanvasCoords(e);
+    const labelHit = hitAttrLabel(ctx, doc, page, x, y);
+    if (labelHit) { openProperties({ kind: labelHit.kind, index: labelHit.index }); return; }
     const hit = hitTest(ctx, doc, page, x, y);
-    if (!hit) return;
-
-    if (hit.kind === 'state') openStateDialog(hit.index);
-    else if (hit.kind === 'transition') openTransitionDialog(hit.index);
-    else if (hit.kind === 'text') openTextDialog(hit.index);
+    if (hit) openProperties(hit);
   });
 
-  // File → Generate HDL ▸ <language> (submenu items carry a data-lang).
-  document.querySelectorAll<HTMLElement>('[data-lang]').forEach((el) => {
-    el.addEventListener('click', () => {
-      vscode.postMessage({
-        type: 'generate',
-        text: serializeFzm(doc),
-        language: el.dataset.lang,
-        customArgs: doc.preferences.customArgs,
-      });
+  // The edit bar: the everyday editing surface (common fields, live). Its
+  // "All attributes…" button opens the same complete dialog double-click does.
+  const editBarEl = document.getElementById('editbar');
+  if (editBarEl) {
+    const editBar = buildEditBar(editBarEl, {
+      getDoc: () => doc,
+      getSelection: () => selection,
+      getGroup: () => group,
+      redraw,
+      commit,
+      message: (m) => void showMessage(m),
+      openAllAttributes: openProperties,
     });
-  });
+    refreshEditBar = () => editBar.refresh();
+    editBar.refresh();
+  }
 
   // Export the current page as an image. Java exports into a fresh image that is
   // always light and always 1:1 (FizzimGui.exportFile), so render offscreen
   // rather than snapshotting the live canvas — otherwise the current zoom and
-  // dark mode get baked in. Selection/marquee are excluded too.
+  // surface mode get baked in. Selection/marquee are excluded too.
+  //
+  // The 'export' surface mode is white/black no matter what the user is working
+  // in: these diagrams get sent to coworkers and printed, and white is the house
+  // standard, so a dark-theme session must never produce a dark PNG.
   const exportImage = (mime: 'image/png' | 'image/jpeg') => {
     const { width, height } = computeBounds(doc, page);
     const off = document.createElement('canvas');
@@ -965,12 +1105,9 @@ function main(): void {
     off.height = Math.round(height);
     const offCtx = off.getContext('2d');
     if (!offCtx) return;
-    offCtx.fillStyle = '#ffffff';
-    offCtx.fillRect(0, 0, off.width, off.height);
     render(offCtx, doc, page, null, {
       zoom: 1,
-      fg: '#000000',
-      bg: '#ffffff',
+      theme: readTheme('export'),
       group: [],
       marquee: null,
       fontPx: doc.preferences.fontSize,
@@ -981,12 +1118,7 @@ function main(): void {
     const dataUrl = mime === 'image/jpeg' ? off.toDataURL('image/jpeg', 0.92) : off.toDataURL('image/png');
     vscode.postMessage({ type: 'exportImage', dataUrl });
   };
-  document.getElementById('export-png-btn')?.addEventListener('click', () => exportImage('image/png'));
-  document.getElementById('export-jpg-btn')?.addEventListener('click', () => exportImage('image/jpeg'));
-
-  const prefsBtn = document.getElementById('prefs-btn');
-  if (prefsBtn) {
-    prefsBtn.addEventListener('click', () => {
+  const openPreferences = () => {
       const p = doc.preferences;
       void showForm('Preferences', [
         { kind: 'select', key: 'fontName', label: 'Font', value: p.fontName, options: fontOptions(p.fontName) },
@@ -1036,34 +1168,30 @@ function main(): void {
           loopbackColor: String(res.defLoopColor),
         });
         // keep the toolbar checkboxes in sync with the new values
-        if (typeof gridToggle !== 'undefined' && gridToggle) gridToggle.checked = p.grid;
-        if (typeof tableToggle !== 'undefined' && tableToggle) tableToggle.checked = p.tableVis;
+        if (gridToggle) gridToggle.checked = p.grid;
+        if (tableToggle) tableToggle.checked = p.tableVis;
         resize();
         redraw();
         commit();
       });
-    });
-  }
+  };
 
-  // Global Attributes ▸ <tab>: open the tabbed editor on the chosen tab.
-  document.querySelectorAll<HTMLElement>('[data-tab]').forEach((el) => {
-    el.addEventListener('click', () => {
-      void showGlobalEditor(doc, Number(el.dataset.tab)).then((result) => {
-        if (!result) return;
-        doc = result;
-        selection = null;
-        resize();
-        redraw();
-        commit();
-      });
+  const openGlobals = (tab: number) => {
+    void showGlobalEditor(doc, tab).then((result) => {
+      if (!result) return;
+      doc = result;
+      selection = null;
+      resize();
+      redraw();
+      commit();
     });
-  });
+  };
 
-  // File → Page Setup: set the canvas pixel dimensions (Fizzim's Page Setup),
-  // stored in the .fzm preferences. Replaces the old inline W×H toolbar inputs;
-  // syncPageInputs is now a no-op kept so existing callers don't need changing.
+  // Fizzim's Page Setup: the canvas pixel dimensions, stored in the .fzm
+  // preferences. syncPageInputs is a no-op kept so existing callers don't need
+  // changing (it fed the old inline W×H toolbar inputs).
   const syncPageInputs = () => {};
-  document.getElementById('menu-pagesetup')?.addEventListener('click', () => {
+  const openPageSetup = () => {
     const p = doc.preferences;
     void showForm('Page Setup', [
       { kind: 'text', key: 'w', label: 'Page width (px)', value: String(p.pageSizeW) },
@@ -1077,58 +1205,9 @@ function main(): void {
       redraw();
       commit();
     });
-  });
+  };
 
-  // --- Menu-bar behaviour: click a title to open its dropdown; while a menu is
-  // open, hovering another title switches to it; any leaf click or an outside
-  // click closes everything (submenus open on hover, via CSS).
-  const menus = Array.from(document.querySelectorAll<HTMLElement>('#menubar .menu'));
-  const closeMenus = () => menus.forEach((m) => m.classList.remove('open'));
-  menus.forEach((m) => {
-    const title = m.querySelector('.menu-title');
-    title?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const wasOpen = m.classList.contains('open');
-      closeMenus();
-      if (!wasOpen) m.classList.add('open');
-    });
-    title?.addEventListener('mouseenter', () => {
-      if (menus.some((x) => x.classList.contains('open'))) {
-        closeMenus();
-        m.classList.add('open');
-      }
-    });
-  });
-  // Clicking a submenu parent keeps the menu open (its flyout is hover-driven).
-  document.querySelectorAll<HTMLElement>('#menubar .menu-item.has-sub').forEach((it) => {
-    it.addEventListener('click', (e) => e.stopPropagation());
-  });
-  document.addEventListener('click', () => closeMenus());
-
-  // File/Edit/Help items that map to VS Code commands or existing handlers.
-  const cmd = (id: string, command: string) =>
-    document.getElementById(id)?.addEventListener('click', () => vscode.postMessage({ type: 'command', command }));
-  cmd('menu-new', 'fizzim.newDiagram');
-  cmd('menu-open', 'workbench.action.files.openFile');
-  cmd('menu-save', 'workbench.action.files.save');
-  cmd('menu-saveas', 'workbench.action.files.saveAs');
-  document.getElementById('menu-viewtext')?.addEventListener('click', () => vscode.postMessage({ type: 'viewAsText' }));
-  document.getElementById('menu-undo')?.addEventListener('click', () => vscode.postMessage({ type: 'undo' }));
-  document.getElementById('menu-redo')?.addEventListener('click', () => vscode.postMessage({ type: 'redo' }));
-  document.getElementById('menu-delete')?.addEventListener('click', () => deleteSelected());
-  document.getElementById('menu-about')?.addEventListener('click', () => {
-    void showMessage(
-      'Fizzim for VS Code — a community port of Fizzim (Zimmer Design Services). ' +
-        'Draw finite-state machines and generate synthesizable Verilog/VHDL. GPL-3.0-or-later.'
-    );
-  });
-
-  // Zoom controls (help with large FSMs that don't fit the viewport).
-  document.getElementById('zoom-in-btn')?.addEventListener('click', () => applyZoom(zoom * 1.25));
-  document.getElementById('zoom-out-btn')?.addEventListener('click', () => applyZoom(zoom / 1.25));
-  document.getElementById('zoom-reset-btn')?.addEventListener('click', () => applyZoom(1));
-  document.getElementById('zoom-fit-btn')?.addEventListener('click', () => fitToView());
-  document.getElementById('fit-page-btn')?.addEventListener('click', () => {
+  const fitPage = () => {
     // Measure content alone (floorToPage=false): flooring at the current page
     // size would make each click grow the page by the bounds margin.
     const b = computeBounds(doc, page, false);
@@ -1138,37 +1217,112 @@ function main(): void {
     resize();
     redraw();
     commit();
-  });
+  };
 
-  // Grid toggle (persists to the .fzm <Grid> preference).
   const tableToggle = document.getElementById('table-toggle') as HTMLInputElement | null;
+  const gridToggle = document.getElementById('grid-toggle') as HTMLInputElement | null;
+  const surfaceToggle = document.getElementById('surface-toggle') as HTMLInputElement | null;
+
+  // Grid and Table are document preferences (they live in the .fzm), so toggling
+  // them is an edit. The surface is a view preference and is persisted to the
+  // fizzim.canvasSurface setting instead — toggling it must never dirty the file.
+  const setGrid = (on: boolean) => {
+    doc.preferences.grid = on;
+    if (gridToggle) gridToggle.checked = on;
+    redraw();
+    commit();
+  };
+  const setTable = (on: boolean) => {
+    doc.preferences.tableVis = on;
+    if (tableToggle) tableToggle.checked = on;
+    redraw();
+    commit();
+  };
+  const setSurface = (mode: SurfaceMode) => {
+    surface = mode;
+    if (surfaceToggle) surfaceToggle.checked = mode === 'theme';
+    redraw();
+    vscode.postMessage({ type: 'setCanvasSurface', value: mode });
+  };
+
+  const about = () =>
+    showMessage(
+      'Fizzim for VS Code — a community port of Fizzim (Zimmer Design Services). ' +
+        'Draw finite-state machines and generate synthesizable Verilog/VHDL. GPL-3.0-or-later.'
+    );
+
+  // Everything the v1 menu bar could do, as named actions. The host drives these
+  // by name (see `invoke` in extension.ts) from the title bar, the Command
+  // Palette and keybindings; the toolbar below calls the same functions.
+  const actions: Record<string, (arg?: unknown) => void> = {
+    zoomIn: () => applyZoom(zoom * 1.25),
+    zoomOut: () => applyZoom(zoom / 1.25),
+    zoomReset: () => applyZoom(1),
+    zoomFit: () => fitToView(),
+    fitPage,
+    toggleGrid: () => setGrid(!doc.preferences.grid),
+    toggleTable: () => setTable(!doc.preferences.tableVis),
+    toggleSurface: () => setSurface(surface === 'theme' ? 'paper' : 'theme'),
+    preferences: () => openPreferences(),
+    pageSetup: openPageSetup,
+    viewAsText: () => vscode.postMessage({ type: 'viewAsText' }),
+    about: () => void about(),
+    globals: (arg) => openGlobals(Number(arg) || 0),
+    generate: (arg) =>
+      vscode.postMessage({
+        type: 'generate',
+        text: serializeFzm(doc),
+        language: String(arg || 'verilog'),
+        customArgs: doc.preferences.customArgs,
+      }),
+    export: (arg) => exportImage(arg === 'image/jpeg' ? 'image/jpeg' : 'image/png'),
+  };
+
+  // --- Toolbar. The three document actions sit next to the canvas rather than
+  // in the editor title bar; they're the same functions the commands call.
+  document.getElementById('generate-btn')?.addEventListener('click', () =>
+    // Language choice is the host's QuickPick, so the toolbar and the Command
+    // Palette ask the same question rather than each having their own answer.
+    vscode.postMessage({ type: 'command', command: 'fizzim.generateHdl' })
+  );
+  document.getElementById('export-btn')?.addEventListener('click', () =>
+    vscode.postMessage({ type: 'command', command: 'fizzim.exportImage' })
+  );
+  document.getElementById('globals-btn')?.addEventListener('click', () => openGlobals(0));
+
+  // --- Zoom: a status-bar button opening our own menu, anchored to its top edge
+  // so it flies up over the canvas instead of off the bottom of the window.
+  zoomBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const r = zoomBtn.getBoundingClientRect();
+    const pct = `${Math.round(zoom * 100)}%`;
+    showContextMenu(
+      r.left,
+      r.top,
+      [
+        { label: 'Zoom In', action: () => actions.zoomIn() },
+        { label: 'Zoom Out', action: () => actions.zoomOut() },
+        { label: 'Fit to Window', action: () => fitToView() },
+        { label: 'Fit Page to Drawing', action: () => fitPage() },
+        ...[0.5, 0.75, 1, 1.5, 2].map((z) => ({
+          label: `${z * 100}%`,
+          action: () => applyZoom(z),
+        })),
+      ],
+      { above: true, checked: pct }
+    );
+  });
   if (tableToggle) {
     tableToggle.checked = doc.preferences.tableVis;
-    tableToggle.addEventListener('change', () => {
-      doc.preferences.tableVis = tableToggle.checked;
-      redraw();
-      commit();
-    });
+    tableToggle.addEventListener('change', () => setTable(tableToggle.checked));
   }
-  const gridToggle = document.getElementById('grid-toggle') as HTMLInputElement | null;
   if (gridToggle) {
     gridToggle.checked = doc.preferences.grid;
-    gridToggle.addEventListener('change', () => {
-      doc.preferences.grid = gridToggle.checked;
-      redraw();
-      commit();
-    });
+    gridToggle.addEventListener('change', () => setGrid(gridToggle.checked));
   }
-  // Dark mode toggle: a view preference (not stored in the .fzm) persisted to the
-  // fizzim.darkMode setting via the host, so it isn't a document edit.
-  const darkToggle = document.getElementById('dark-toggle') as HTMLInputElement | null;
-  if (darkToggle) {
-    darkToggle.checked = darkMode;
-    darkToggle.addEventListener('change', () => {
-      darkMode = darkToggle.checked;
-      redraw();
-      vscode.postMessage({ type: 'setDarkMode', value: darkMode });
-    });
+  if (surfaceToggle) {
+    surfaceToggle.checked = surface === 'theme';
+    surfaceToggle.addEventListener('change', () => setSurface(surfaceToggle.checked ? 'theme' : 'paper'));
   }
 
   // Ctrl/Cmd + mouse wheel zooms, like most diagram editors.
@@ -1182,14 +1336,23 @@ function main(): void {
     { passive: false }
   );
 
+
   // External edits (e.g. the file changed on disk, or an undo): re-parse and
   // redraw. Selection/drag state is dropped, which is fine for an outside edit.
   window.addEventListener('message', (e) => {
     const msg = e.data;
+    // A command fired from the editor title bar, the Command Palette or a
+    // keybinding. The host doesn't know what any of them mean — it just relays
+    // the name to whichever diagram is focused.
+    if (msg && msg.type === 'invoke' && typeof msg.id === 'string') {
+      actions[msg.id]?.(msg.arg);
+      return;
+    }
     if (msg && msg.type === 'externalUpdate' && typeof msg.text === 'string') {
       doc = parseFzm(msg.text);
       if (page > doc.tabs.length) page = 1;
       selection = null;
+      hover = null; // a whole new doc: every index is meaningless now
       group = [];
       marquee = null;
       drag = null;

@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.0.0 — visual & UX modernization (pre-release)
+
+First pre-release of the v2 line — a ground-up modernization of the look and
+interaction, in active development on the pre-release channel. **The `.fzm`
+format and the generated Verilog/VHDL are unchanged** (verified byte-identical
+against the reference corpus), so files and HDL stay fully compatible with v1
+and the original Fizzim.
+
+- **Crisp canvas.** Fixed a `devicePixelRatio` bug that made every stroke soft on
+  HiDPI/scaled displays — states, arrows, and labels are now sharp.
+- **Modern shape language.** Filled state shapes, real UI typography (bold state
+  names, muted outputs), tapered arrowheads, a dot grid, and hover feedback with
+  proper cursors. Selection uses the theme's accent with a soft halo instead of a
+  red box.
+- **Canvas surface.** White "paper" by default (the standard for FSM diagrams);
+  an opt-in toggle follows the VS Code theme. Image exports are **always** white,
+  whichever mode you work in.
+- **Native VS Code chrome.** The in-editor menu bar is gone: actions are a slim
+  canvas toolbar plus `Fizzim:` Command Palette commands, with a status bar
+  showing the selection, counts, cursor position, and a zoom control. Page tabs
+  restyled to match VS Code.
+- **New editing model.** An always-present **edit bar** below the toolbar edits
+  the selected object's common fields live (name, reset, colour, outputs /
+  equation, priority, from-to, stub). For states with many outputs it pages with
+  `‹`/`›` arrows or expands vertically (pinnable). Double-click or **Enter** opens
+  the full property dialog for the long tail.
+- **Safer deletes.** Deleting shows a status-bar hint that Ctrl+Z restores it.
+
 ## 1.3.1
 
 - Generate HDL output is now deterministic (Perl hash-seed pinned in the

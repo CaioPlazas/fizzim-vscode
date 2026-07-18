@@ -1,0 +1,52 @@
+<!-- The webview's body. Loaded by getHtml() in extension.ts and by
+     scripts/preview.mjs, so the preview can't drift from the real thing.
+
+     The Swing menu bar is gone (v2 Phase C): everything here is also a fizzim.*
+     command, so the Command Palette and keybindings reach it too.
+
+     Placement, after review: the actions live next to the canvas rather than in
+     the editor title bar. The title bar is the idiomatic VS Code spot, but it's
+     in the far corner from where you're working, and VS Code collapses title
+     actions into a "…" overflow once the tab bar fills up — Generate HDL is not
+     something that should be able to disappear. Zoom sits in the status bar,
+     next to the value it changes. -->
+
+<div id="toolbar">
+  <div class="tb-group">
+    <button class="tb-action" id="generate-btn" title="Generate HDL from this diagram">
+      <span class="codicon codicon-zap"></span>Generate HDL
+    </button>
+    <button class="tb-action" id="globals-btn" title="Machine, inputs, outputs, state and transition attributes">
+      <span class="codicon codicon-table"></span>Global Attributes
+    </button>
+    <button class="tb-action" id="export-btn" title="Export the diagram as an image (always on white)">
+      <span class="codicon codicon-device-camera"></span>Export
+    </button>
+  </div>
+  <div class="tb-sep"></div>
+  <div class="tb-group">
+    <label class="tb-toggle" title="Show the alignment grid (stored in the .fzm)">
+      <input type="checkbox" id="grid-toggle"> Grid
+    </label>
+    <label class="tb-toggle" title="Show the global attributes table on the canvas (stored in the .fzm)">
+      <input type="checkbox" id="table-toggle"> Table
+    </label>
+    <label class="tb-toggle" title="Draw on the VS Code theme's background instead of white paper. Exports are always white.">
+      <input type="checkbox" id="surface-toggle"> Theme colors
+    </label>
+  </div>
+</div>
+
+<div id="editbar"></div>
+
+<div id="canvas-wrap"><canvas id="canvas"></canvas></div>
+
+<div id="page-tabs"></div>
+
+<div id="statusbar">
+  <span id="status-selection"></span>
+  <span class="sb-spacer"></span>
+  <span id="status-counts"></span>
+  <span id="status-pos"></span>
+  <button class="sb-btn" id="zoom-btn" title="Zoom">100%<span class="sb-chevron">&#x2304;</span></button>
+</div>

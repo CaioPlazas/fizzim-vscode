@@ -1,12 +1,27 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmTransition, ObjAttribute, Point } from '../fzm/model';
 import type { Selection } from './hitTest';
+import { makeTheme, Theme } from './theme';
 
-const RESET_RING_OFFSET = 3;
+const RESET_RING_OFFSET = 4;
+// Grid dot size, in CSS pixels (converted to model units at draw time).
+const GRID_DOT_PX = 1.5;
 const ARROW_LENGTH = 13;
 const ARROW_ANGLE = Math.PI / 6; // 30 degrees, matches StateTransitionObj's arrowhead
 const HANDLE_SIZE = 7;
 
-export let TEXT_FONT = '11px Arial';
+// The font stack the canvas uses when the .fzm asks for "Arial" - which is what
+// every file written by the Java tool says, since it was Swing's default rather
+// than anyone's choice. A file naming any other font gets that font: it was
+// picked deliberately. This is a view-layer substitution; the .fzm still says
+// Arial and Preferences still shows Arial.
+const UI_FONT_STACK = '"Segoe WPC", "Segoe UI", system-ui, "Ubuntu", "Droid Sans", sans-serif';
+
+export function fontFamilyFor(name: string): string {
+  const n = (name || '').trim();
+  return !n || n.toLowerCase() === 'arial' ? UI_FONT_STACK : `"${n}", ${UI_FONT_STACK}`;
+}
+
+export let TEXT_FONT = `11px ${UI_FONT_STACK}`;
 // Canvas fillText draws from the alphabetic baseline: glyphs extend up by the
 // ascent and down by the descent. These bounds are shared by rendering,
 // hit-testing, and the selection box so they can't drift apart.
@@ -38,17 +53,26 @@ function colorToCss(rgb: number): string {
 }
 
 // Theme + view state used while drawing. Set by render() each frame from the
-// webview's current VS Code theme colors and zoom level. Kept as module state
-// so the draw helpers don't each need extra params.
-let themeFg = '#000000';
-let themeBg = '#ffffff';
+// webview's current surface mode and zoom level. Kept as module state so the
+// draw helpers don't each need extra params.
+let theme: Theme = makeTheme('paper');
 let lineW = 1;
+let hover: Selection | null = null;
+// A state's name is the object's title; its outputs are supporting detail. The
+// weight difference is what gives a state a reading order at a glance.
+let NAME_FONT = `600 11px ${UI_FONT_STACK}`;
 const DEFAULT_BLACK = -16777216;
 
 export interface RenderOptions {
   zoom: number;
-  fg: string;
-  bg: string;
+  /** The palette to draw with (see theme.ts). */
+  theme: Theme;
+  /**
+   * Device pixel ratio. The canvas buffer is sized in device pixels and the
+   * drawing transform scales by zoom x dpr, so strokes land on real pixels
+   * instead of being resampled on a HiDPI display.
+   */
+  dpr?: number;
   fontPx?: number;
   fontName?: string;
   lineWidth?: number;
@@ -56,15 +80,22 @@ export interface RenderOptions {
   // The attribute label currently being dragged: `selection` is null during a
   // label drag, so this is how the red box stays visible while you move it.
   dragLabel?: AttrLabelTarget;
+  /** The object under the cursor, highlighted so the canvas answers the mouse. */
+  hover?: Selection | null;
   group?: Selection[];
   marquee?: { x0: number; y0: number; x1: number; y1: number } | null;
 }
 
+const sameSel = (a: Selection | null, b: Selection | null): boolean =>
+  !!a && !!b && a.kind === b.kind && a.index === b.index;
+
 // The color to actually draw an object with: its stored color, except the
-// default black is swapped for the theme foreground so black shapes stay
-// visible on a dark background.
-function resolveColor(rgb: number): string {
-  return rgb === DEFAULT_BLACK ? themeFg : colorToCss(rgb);
+// default black is swapped for a theme token so black shapes stay visible on a
+// dark background. `fallback` lets a caller say what "default" means in its
+// context (ink for a title, muted for supporting text); a color the user chose
+// deliberately is always honored as-is.
+function resolveColor(rgb: number, fallback: string = theme.ink): string {
+  return rgb === DEFAULT_BLACK ? fallback : colorToCss(rgb);
 }
 
 // A row of the on-canvas global-attributes table (Name/Value/Type/Comment).
@@ -166,20 +197,62 @@ export function stateAnchor(s: FzmState): Point {
 // Draws an object's visible attribute labels, each centered on
 // anchor + (x2Obj, y2Obj) and stacked by its visible index (Java's `step`).
 // Ports GeneralObj.paintComponent's attribute loop + ObjAttribute.paintComponent.
-function drawAttrLabels(ctx: CanvasRenderingContext2D, attributes: ObjAttribute[], info: OutputInfo, anchor: Point, filterPage?: number): void {
-  ctx.font = TEXT_FONT;
+// One object's labels, in one pass. Plates and text are separate passes across
+// the whole page (see LabelJob): a plate is opaque, so if it were drawn right
+// before its own text it would erase any *other* label it happens to overlap -
+// turning a visible collision into silently hidden data.
+function drawAttrLabels(
+  ctx: CanvasRenderingContext2D,
+  attributes: ObjAttribute[],
+  info: OutputInfo,
+  anchor: Point,
+  filterPage: number | undefined,
+  pass: 'plate' | 'text'
+): void {
   ctx.textAlign = 'center';
   visibleAttrLabels(attributes, info).forEach((lab, step) => {
     // On a cross-page transition each label lives on its own page (Java's
     // ObjAttribute.paintComponent `myPage == currPage`), but `step` still counts
     // every visible attribute so the stacking positions stay stable.
     if (filterPage !== undefined && lab.attr.page !== filterPage) return;
-    ctx.fillStyle = resolveColor(lab.attr.color);
+    if (pass === 'plate') {
+      const b = labelBox(ctx, lab, anchor, step);
+      ctx.fillStyle = theme.plate;
+      ctx.fillRect(b.l + 2, b.t, b.r - b.l - 4, b.b - b.t);
+      return;
+    }
     const cx = anchor.x + lab.attr.x2Obj;
     const baseY = anchor.y + step * TEXT_LINE_H + lab.attr.y2Obj;
+    ctx.font = fontForLabel(lab);
+    ctx.fillStyle = resolveColor(lab.attr.color, isTitle(lab) ? theme.ink : theme.muted);
     // Literal "\n" in an attribute value splits into multiple stacked lines.
     lab.text.split('\\n').forEach((line, li) => ctx.fillText(line, cx, baseY + li * TEXT_LINE_H));
   });
+}
+
+// A deferred label draw. The render loop walks the page once to draw shapes and
+// collect these, then plays them back twice: every plate, then every text. That
+// ordering is what keeps a transition's plate from punching a hole in a state
+// or in another transition's label, while still letting it hide the curve
+// underneath - which is the only thing it's there for.
+interface LabelJob {
+  attributes: ObjAttribute[];
+  anchor: Point;
+  filterPage?: number;
+  plate: boolean;
+}
+
+// A label that names its object (a state's name, a transition's equation) is the
+// thing you read first; everything else on the object is supporting detail.
+function isTitle(lab: AttrLabel): boolean {
+  return lab.attr.name === 'name' || lab.attr.name === 'equation';
+}
+
+// The font a label draws with. Every place that measures a label (the render,
+// the red box, the hit test) goes through this, so bold titles can't put the
+// three out of sync.
+export function fontForLabel(lab: AttrLabel): string {
+  return isTitle(lab) ? NAME_FONT : TEXT_FONT;
 }
 
 // A hit on an object's individual attribute label. `attrIndex` is the index
@@ -193,6 +266,7 @@ export interface AttrLabelTarget {
 // The bounding box of a visible label, mirroring drawAttrLabels' layout and
 // ObjAttribute's selection box. Needs the canvas to measure text width.
 function labelBox(ctx: CanvasRenderingContext2D, lab: AttrLabel, anchor: Point, step: number): { l: number; r: number; t: number; b: number } {
+  ctx.font = fontForLabel(lab);
   const cx = anchor.x + lab.attr.x2Obj;
   const baseY = anchor.y + step * TEXT_LINE_H + lab.attr.y2Obj;
   const lines = lab.text.split('\\n');
@@ -205,8 +279,7 @@ function labelBox(ctx: CanvasRenderingContext2D, lab: AttrLabel, anchor: Point, 
 // Red outlines around an object's visible labels (Java's parentSelected /
 // selected-label box). filterPage as in drawAttrLabels.
 export function drawLabelBoxes(ctx: CanvasRenderingContext2D, attributes: ObjAttribute[], info: OutputInfo, anchor: Point, filterPage?: number): void {
-  ctx.font = TEXT_FONT;
-  ctx.strokeStyle = '#ff0000';
+  ctx.strokeStyle = theme.accent;
   ctx.lineWidth = 1;
   visibleAttrLabels(attributes, info).forEach((lab, step) => {
     if (filterPage !== undefined && lab.attr.page !== filterPage) return;
@@ -217,6 +290,7 @@ export function drawLabelBoxes(ctx: CanvasRenderingContext2D, attributes: ObjAtt
 
 // Index (into `attributes`) of the topmost visible label under (x, y), or -1.
 function labelHitIn(ctx: CanvasRenderingContext2D, attributes: ObjAttribute[], info: OutputInfo, anchor: Point, x: number, y: number, filterPage?: number): number {
+  // labelBox sets the per-label font itself, so hit boxes match what was drawn.
   const labels = visibleAttrLabels(attributes, info);
   for (let k = labels.length - 1; k >= 0; k--) {
     if (filterPage !== undefined && labels[k].attr.page !== filterPage) continue;
@@ -253,18 +327,28 @@ export function hitAttrLabel(ctx: CanvasRenderingContext2D, doc: FzmDocument, pa
   return null;
 }
 
-function drawState(ctx: CanvasRenderingContext2D, s: FzmState): void {
+function drawState(ctx: CanvasRenderingContext2D, s: FzmState, hovered: boolean): void {
   const rx = (s.x1 - s.x0) / 2;
   const ry = (s.y1 - s.y0) / 2;
   const cx = s.x0 + rx;
   const cy = s.y0 + ry;
 
-  ctx.strokeStyle = resolveColor(s.color);
-  ctx.lineWidth = lineW;
+  // Filled, not hollow: an unfilled outline is what made these read as Swing
+  // line art. The fill is faint enough to survive printing (see theme.stateFill)
+  // and it gives labels something to sit on instead of the bare grid.
   ctx.beginPath();
   ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = hovered ? theme.accentSoft : theme.stateFill;
+  ctx.fill();
+
+  ctx.strokeStyle = resolveColor(s.color);
+  ctx.lineWidth = lineW;
   ctx.stroke();
 
+  // The reset state's second ring. Kept (it's FSM convention, not a Java
+  // artifact) and kept in the object's own color rather than the accent: this
+  // one is in the export, and a blue ring on a printed diagram would be a
+  // surprise, not a design.
   if (s.reset) {
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx + RESET_RING_OFFSET, ry + RESET_RING_OFFSET, 0, 0, Math.PI * 2);
@@ -277,8 +361,11 @@ function drawGlobalTable(ctx: CanvasRenderingContext2D, doc: FzmDocument, x: num
   if (rows.length === 0) return;
   ctx.font = TEXT_FONT;
   ctx.textAlign = 'left';
-  ctx.fillStyle = themeFg;
+  ctx.fillStyle = theme.ink;
 
+  // Column widths are still measured off the widest cell (Java's layout), but
+  // section headers now carry weight and the cells drop to muted, so the table
+  // has a hierarchy instead of being a wall of identical 11px text.
   const lineH = 15;
   // Column x-offsets from the measured widest cell in each column.
   const w1 = Math.max(...rows.map((r) => ctx.measureText(r.c1).width));
@@ -292,6 +379,8 @@ function drawGlobalTable(ctx: CanvasRenderingContext2D, doc: FzmDocument, x: num
 
   rows.forEach((r, i) => {
     const ry = y + (i + 1) * lineH;
+    ctx.font = r.header ? NAME_FONT : TEXT_FONT;
+    ctx.fillStyle = r.header ? theme.ink : theme.muted;
     ctx.fillText(r.c1, x1, ry);
     if (!r.header) {
       ctx.fillText(r.c2, x2, ry);
@@ -299,18 +388,28 @@ function drawGlobalTable(ctx: CanvasRenderingContext2D, doc: FzmDocument, x: num
       ctx.fillText(r.c4, x4, ry);
     }
   });
+  ctx.font = TEXT_FONT;
 }
 
+// The arrowhead: Java's flat triangle, given a notched tail so it reads as a
+// point rather than a wedge, and scaled with the file's LineWidth so a heavy
+// diagram gets heavy arrows instead of the same 13px head on every line.
 function drawArrowhead(ctx: CanvasRenderingContext2D, from: Point, to: Point): void {
   const angle = Math.atan2(to.y - from.y, to.x - from.x);
-  const x1 = to.x - ARROW_LENGTH * Math.cos(angle - ARROW_ANGLE);
-  const y1 = to.y - ARROW_LENGTH * Math.sin(angle - ARROW_ANGLE);
-  const x2 = to.x - ARROW_LENGTH * Math.cos(angle + ARROW_ANGLE);
-  const y2 = to.y - ARROW_LENGTH * Math.sin(angle + ARROW_ANGLE);
+  const len = ARROW_LENGTH * (1 + (lineW - 1) * 0.35);
+  const x1 = to.x - len * Math.cos(angle - ARROW_ANGLE);
+  const y1 = to.y - len * Math.sin(angle - ARROW_ANGLE);
+  const x2 = to.x - len * Math.cos(angle + ARROW_ANGLE);
+  const y2 = to.y - len * Math.sin(angle + ARROW_ANGLE);
+  // The tail notch: pulled back toward the tip so the barbs sweep instead of
+  // ending in a flat edge.
+  const bx = to.x - len * 0.72 * Math.cos(angle);
+  const by = to.y - len * 0.72 * Math.sin(angle);
 
   ctx.beginPath();
   ctx.moveTo(to.x, to.y);
   ctx.lineTo(x1, y1);
+  ctx.lineTo(bx, by);
   ctx.lineTo(x2, y2);
   ctx.closePath();
   ctx.fill();
@@ -384,7 +483,7 @@ function drawCrossPageStub(
 
   const otherPageName = otherState ? doc.tabs[otherState.page - 1] ?? `Page ${otherState.page}` : '?';
   const label = `${otherName} (${otherPageName})`;
-  ctx.fillStyle = themeFg;
+  ctx.fillStyle = theme.ink;
   ctx.font = TEXT_FONT;
   ctx.textAlign = 'left';
   // Java right-aligns a label wider than the sign to the pentagon's right edge.
@@ -422,7 +521,7 @@ function drawSameStub(ctx: CanvasRenderingContext2D, t: FzmTransition): void {
   ctx.stroke();
 
   // Label the tip with the destination state's name (Java draws endState name).
-  ctx.fillStyle = themeFg;
+  ctx.fillStyle = theme.ink;
   ctx.font = TEXT_FONT;
   ctx.textAlign = dx >= 0 ? 'left' : 'right';
   ctx.fillText(t.endState, tip.x + (dx >= 0 ? 4 : -4), tip.y - 4);
@@ -449,26 +548,78 @@ export function transitionLabelAnchor(t: FzmTransition | FzmLoopback, doc: FzmDo
   return page === sp ? midpoint(t.startPt, t.pageS) : midpoint(t.endPt, t.pageE);
 }
 
-function drawCurve(ctx: CanvasRenderingContext2D, t: FzmTransition | FzmLoopback): void {
+function drawCurve(ctx: CanvasRenderingContext2D, t: FzmTransition | FzmLoopback, hovered: boolean): void {
+  if (hovered) {
+    // Thicken rather than recolor: a transition's color can be meaningful, and
+    // the halo says "under the cursor" without lying about which edge this is.
+    ctx.strokeStyle = theme.accentSoft;
+    ctx.lineWidth = lineW + 6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(t.startPt.x, t.startPt.y);
+    ctx.bezierCurveTo(t.startCtrlPt.x, t.startCtrlPt.y, t.endCtrlPt.x, t.endCtrlPt.y, t.endPt.x, t.endPt.y);
+    ctx.stroke();
+  }
   ctx.strokeStyle = resolveColor(t.color);
   ctx.fillStyle = resolveColor(t.color);
   ctx.lineWidth = lineW;
+  // Round caps/joins: the butt caps left visible notches where a curve met its
+  // arrowhead, which is a lot of what made the edges look like line art.
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
 
   ctx.beginPath();
   ctx.moveTo(t.startPt.x, t.startPt.y);
   ctx.bezierCurveTo(t.startCtrlPt.x, t.startCtrlPt.y, t.endCtrlPt.x, t.endCtrlPt.y, t.endPt.x, t.endPt.y);
   ctx.stroke();
+  ctx.lineCap = 'butt';
 
   drawArrowhead(ctx, t.endCtrlPt, t.endPt);
 }
 
+// A grab point. Surface-filled with an accent border (the draw.io/Figma idiom)
+// rather than Swing's solid red square: it reads as "handle" instead of "error",
+// and the light interior keeps it visible over a dark shape.
 function drawHandle(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-  ctx.fillStyle = '#ff0000';
-  ctx.fillRect(x - HANDLE_SIZE / 2, y - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
+  const h = HANDLE_SIZE / 2;
+  ctx.beginPath();
+  ctx.roundRect(x - h, y - h, HANDLE_SIZE, HANDLE_SIZE, 2);
+  ctx.fillStyle = theme.handleFill;
+  ctx.fill();
+  ctx.strokeStyle = theme.accent;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+// The soft outer glow that says "this one". Traces the object's own shape, so
+// the eye lands on the object rather than on a box drawn around it.
+function haloEllipse(ctx: CanvasRenderingContext2D, cx: number, cy: number, rx: number, ry: number): void {
+  ctx.strokeStyle = theme.accentGlow;
+  ctx.lineWidth = lineW + 5;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+// Guide line from an endpoint to its control point: dashed and accent, so it
+// reads as scaffolding rather than as part of the diagram.
+function drawGuide(ctx: CanvasRenderingContext2D, a: Point, b: Point): void {
+  ctx.strokeStyle = theme.accent;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function drawStateSelection(ctx: CanvasRenderingContext2D, s: FzmState): void {
-  ctx.strokeStyle = '#ff0000';
+  const rx = (s.x1 - s.x0) / 2;
+  const ry = (s.y1 - s.y0) / 2;
+  haloEllipse(ctx, s.x0 + rx, s.y0 + ry, rx + (s.reset ? RESET_RING_OFFSET : 0), ry + (s.reset ? RESET_RING_OFFSET : 0));
+  // The box isn't decoration - it's where the resize handles live.
+  ctx.strokeStyle = theme.accent;
   ctx.lineWidth = 1;
   ctx.strokeRect(s.x0, s.y0, s.x1 - s.x0, s.y1 - s.y0);
   drawHandle(ctx, s.x0, s.y0);
@@ -478,16 +629,18 @@ function drawStateSelection(ctx: CanvasRenderingContext2D, s: FzmState): void {
 }
 
 function drawCurveSelection(ctx: CanvasRenderingContext2D, t: FzmTransition | FzmLoopback): void {
-  ctx.strokeStyle = '#ff0000';
-  ctx.lineWidth = 1;
+  // Halo the curve itself: translucent, so the transition still shows through.
+  ctx.strokeStyle = theme.accentGlow;
+  ctx.lineWidth = lineW + 5;
+  ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(t.startPt.x, t.startPt.y);
-  ctx.lineTo(t.startCtrlPt.x, t.startCtrlPt.y);
+  ctx.bezierCurveTo(t.startCtrlPt.x, t.startCtrlPt.y, t.endCtrlPt.x, t.endCtrlPt.y, t.endPt.x, t.endPt.y);
   ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(t.endPt.x, t.endPt.y);
-  ctx.lineTo(t.endCtrlPt.x, t.endCtrlPt.y);
-  ctx.stroke();
+  ctx.lineCap = 'butt';
+
+  drawGuide(ctx, t.startPt, t.startCtrlPt);
+  drawGuide(ctx, t.endPt, t.endCtrlPt);
 
   drawHandle(ctx, t.startPt.x, t.startPt.y);
   drawHandle(ctx, t.endPt.x, t.endPt.y);
@@ -497,21 +650,23 @@ function drawCurveSelection(ctx: CanvasRenderingContext2D, t: FzmTransition | Fz
 
 function drawStubSelection(ctx: CanvasRenderingContext2D, t: FzmTransition): void {
   const { pt, tip } = sameStub(t);
-  ctx.strokeStyle = '#ff0000';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = theme.accentGlow;
+  ctx.lineWidth = lineW + 5;
+  ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(pt.x, pt.y);
   ctx.lineTo(tip.x, tip.y);
   ctx.stroke();
+  ctx.lineCap = 'butt';
   drawHandle(ctx, pt.x, pt.y);
   drawHandle(ctx, tip.x, tip.y);
 }
 
 function drawTextSelection(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
   const b = textBounds(ctx, text, x, y);
-  ctx.strokeStyle = '#ff0000';
+  ctx.strokeStyle = theme.accent;
   ctx.lineWidth = 1;
-  ctx.strokeRect(b.x, b.y, b.width, b.height);
+  ctx.strokeRect(b.x - 3, b.y - 2, b.width + 6, b.height + 4);
 }
 
 export function render(
@@ -519,87 +674,99 @@ export function render(
   doc: FzmDocument,
   page: number,
   selection: Selection | null,
-  opts: RenderOptions = { zoom: 1, fg: '#000000', bg: '#ffffff' }
+  opts: RenderOptions = { zoom: 1, theme: makeTheme('paper') }
 ): void {
-  themeFg = opts.fg;
-  themeBg = opts.bg;
-  TEXT_FONT = `${opts.fontPx ?? 11}px ${(opts.fontName && opts.fontName.trim()) || 'Arial'}`;
+  theme = opts.theme;
+  TEXT_FONT = `${opts.fontPx ?? 11}px ${fontFamilyFor(opts.fontName ?? '')}`;
+  NAME_FONT = `600 ${opts.fontPx ?? 11}px ${fontFamilyFor(opts.fontName ?? '')}`;
   lineW = opts.lineWidth ?? 1;
+  hover = opts.hover ?? null;
   const canvas = ctx.canvas;
+  // Model units -> device pixels. The buffer is zoom x dpr times the model size,
+  // so drawing in model coordinates under this transform puts every stroke on a
+  // real device pixel instead of a CSS pixel that then gets resampled.
+  const scale = opts.zoom * (opts.dpr ?? 1);
 
-  // Paint the theme background over the whole (device-pixel) canvas, then draw
-  // everything in model coordinates scaled by the zoom factor.
+  // Paint the surface over the whole (device-pixel) canvas, then draw everything
+  // in model coordinates scaled by that factor.
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = themeBg;
+  ctx.fillStyle = theme.surface;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.setTransform(opts.zoom, 0, 0, opts.zoom, 0, 0);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
-  // Alignment grid (when enabled in the .fzm), drawn faintly behind everything.
+  // Alignment grid (when enabled in the .fzm): a dot at each intersection rather
+  // than full-bleed rules, which read as graph paper and competed with the
+  // diagram. Dots give you the same snapping reference and then get out of the way.
   if (doc.preferences.grid && doc.preferences.gridSize > 0) {
     const g = doc.preferences.gridSize;
-    const w = canvas.width / opts.zoom;
-    const h = canvas.height / opts.zoom;
-    ctx.save();
-    ctx.globalAlpha = 0.1;
-    ctx.strokeStyle = themeFg;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    const w = canvas.width / scale;
+    const h = canvas.height / scale;
+    ctx.fillStyle = theme.grid;
+    // A constant size *on screen*, so the dots neither swell into blobs as you
+    // zoom in nor vanish as you zoom out. Sizing them in device pixels instead
+    // (the first cut) made them invisible on any HiDPI display: one device pixel
+    // is a fraction of a CSS pixel there, and a fraction of a pixel at low alpha
+    // renders as almost nothing.
+    const d = GRID_DOT_PX / opts.zoom;
     for (let gx = 0; gx <= w; gx += g) {
-      ctx.moveTo(gx, 0);
-      ctx.lineTo(gx, h);
+      for (let gy = 0; gy <= h; gy += g) ctx.fillRect(gx - d / 2, gy - d / 2, d, d);
     }
-    for (let gy = 0; gy <= h; gy += g) {
-      ctx.moveTo(0, gy);
-      ctx.lineTo(w, gy);
-    }
-    ctx.stroke();
-    ctx.restore();
   }
 
   const outputInfo = buildOutputInfo(doc.outputs);
-  for (const s of doc.states) {
+  // Labels are collected here and drawn after every shape on the page (plates
+  // first, then text). States are pushed before transitions, so a transition's
+  // label still wins over a state's where they overlap - Java's z-order.
+  const labelJobs: LabelJob[] = [];
+  doc.states.forEach((s, i) => {
     if (s.page === page) {
-      drawState(ctx, s);
+      drawState(ctx, s, sameSel(hover, { kind: 'state', index: i }));
       // Name + visible outputs/attributes, each independently positioned & movable.
-      drawAttrLabels(ctx, s.attributes, outputInfo, stateAnchor(s));
+      labelJobs.push({ attributes: s.attributes, anchor: stateAnchor(s), plate: false });
     }
-  }
+  });
   // A transition is drawn in full only when both endpoint states are on this
   // page. If exactly one endpoint is on the page, draw a page-connector "stub"
   // instead (like Fizzim), so the cross-page link is visible.
   const statePage = new Map(doc.states.map((s) => [s.name, s.page]));
-  for (const t of doc.transitions) {
+  doc.transitions.forEach((t, i) => {
+    const hovered = sameSel(hover, { kind: 'transition', index: i });
     if (t.kind === 'loopback') {
       if (statePage.get(t.state) === page) {
-        drawCurve(ctx, t);
-        drawAttrLabels(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page));
+        drawCurve(ctx, t, hovered);
+        labelJobs.push({ attributes: t.attributes, anchor: transitionLabelAnchor(t, doc, page), plate: true });
       }
-      continue;
+      return;
     }
     const sp = statePage.get(t.startState);
     const ep = statePage.get(t.endState);
     if (sp === page && ep === page) {
       if (t.stub) drawSameStub(ctx, t);
-      else drawCurve(ctx, t);
+      else drawCurve(ctx, t, hovered);
       // Same-page: all labels draw here, regardless of their stored page.
-      drawAttrLabels(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page));
+      labelJobs.push({ attributes: t.attributes, anchor: transitionLabelAnchor(t, doc, page), plate: true });
     } else if (sp === page) {
       drawCrossPageStub(ctx, doc, t, 'source');
       // Cross-page: only the labels assigned to this page (Java's per-attribute
       // page); the rest show on the other endpoint's page.
-      drawAttrLabels(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page), page);
+      labelJobs.push({ attributes: t.attributes, anchor: transitionLabelAnchor(t, doc, page), filterPage: page, plate: true });
     } else if (ep === page) {
       drawCrossPageStub(ctx, doc, t, 'dest');
-      drawAttrLabels(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page), page);
+      labelJobs.push({ attributes: t.attributes, anchor: transitionLabelAnchor(t, doc, page), filterPage: page, plate: true });
     }
+  });
+
+  for (const j of labelJobs) {
+    if (j.plate) drawAttrLabels(ctx, j.attributes, outputInfo, j.anchor, j.filterPage, 'plate');
   }
+  for (const j of labelJobs) drawAttrLabels(ctx, j.attributes, outputInfo, j.anchor, j.filterPage, 'text');
   for (const txt of doc.texts) {
     if (txt.page !== page) continue;
     if (txt.isGlobalTable) {
       if (opts.showTable !== false) drawGlobalTable(ctx, doc, txt.x, txt.y);
       continue;
     }
-    ctx.fillStyle = themeFg;
+    ctx.fillStyle = theme.ink;
     ctx.font = TEXT_FONT;
     ctx.textAlign = 'left';
     (txt.text ?? '').split('\\n').forEach((line, li) => ctx.fillText(line, txt.x, txt.y + li * TEXT_LINE_H));
@@ -638,16 +805,8 @@ export function render(
           side === 'source'
             ? [t.startPt, t.startCtrlPt, t.pageSC, t.pageS]
             : [t.endPt, t.endCtrlPt, t.pageEC, t.pageE];
-        ctx.strokeStyle = '#ff0000';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(anchor.x, anchor.y);
-        ctx.lineTo(anchorCtrl.x, anchorCtrl.y);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(edge.x, edge.y);
-        ctx.lineTo(edgeCtrl.x, edgeCtrl.y);
-        ctx.stroke();
+        drawGuide(ctx, anchor, anchorCtrl);
+        drawGuide(ctx, edge, edgeCtrl);
         for (const p of [anchor, anchorCtrl, edgeCtrl, edge]) drawHandle(ctx, p.x, p.y);
       } else if (t.kind === 'transition' && t.stub) {
         drawStubSelection(ctx, t);
@@ -660,9 +819,9 @@ export function render(
     }
   }
 
-  // Multi-selection: a plain red outline around each grouped object.
+  // Multi-selection: a plain accent outline around each grouped object.
   if (opts.group && opts.group.length) {
-    ctx.strokeStyle = '#ff0000';
+    ctx.strokeStyle = theme.accent;
     ctx.lineWidth = 1;
     for (const sel of opts.group) {
       if (sel.kind === 'state') {
@@ -679,11 +838,15 @@ export function render(
   // The rubber-band box being dragged.
   if (opts.marquee) {
     const m = opts.marquee;
-    ctx.strokeStyle = '#ff0000';
+    const x = Math.min(m.x0, m.x1);
+    const y = Math.min(m.y0, m.y1);
+    const w = Math.abs(m.x1 - m.x0);
+    const h = Math.abs(m.y1 - m.y0);
+    ctx.fillStyle = theme.accentSoft;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = theme.accent;
     ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
-    ctx.strokeRect(Math.min(m.x0, m.x1), Math.min(m.y0, m.y1), Math.abs(m.x1 - m.x0), Math.abs(m.y1 - m.y0));
-    ctx.setLineDash([]);
+    ctx.strokeRect(x, y, w, h);
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
