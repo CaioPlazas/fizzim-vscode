@@ -49,6 +49,12 @@ export interface RenderOptions {
   zoom: number;
   fg: string;
   bg: string;
+  /**
+   * Device pixel ratio. The canvas buffer is sized in device pixels and the
+   * drawing transform scales by zoom x dpr, so strokes land on real pixels
+   * instead of being resampled on a HiDPI / fractionally-scaled display.
+   */
+  dpr?: number;
   fontPx?: number;
   fontName?: string;
   lineWidth?: number;
@@ -526,19 +532,23 @@ export function render(
   TEXT_FONT = `${opts.fontPx ?? 11}px ${(opts.fontName && opts.fontName.trim()) || 'Arial'}`;
   lineW = opts.lineWidth ?? 1;
   const canvas = ctx.canvas;
+  // Model units -> device pixels. The buffer is zoom x dpr times the model size,
+  // so drawing in model coordinates under this transform puts every stroke on a
+  // real device pixel instead of a CSS pixel that then gets resampled.
+  const scale = opts.zoom * (opts.dpr ?? 1);
 
   // Paint the theme background over the whole (device-pixel) canvas, then draw
-  // everything in model coordinates scaled by the zoom factor.
+  // everything in model coordinates scaled by that factor.
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = themeBg;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.setTransform(opts.zoom, 0, 0, opts.zoom, 0, 0);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
   // Alignment grid (when enabled in the .fzm), drawn faintly behind everything.
   if (doc.preferences.grid && doc.preferences.gridSize > 0) {
     const g = doc.preferences.gridSize;
-    const w = canvas.width / opts.zoom;
-    const h = canvas.height / opts.zoom;
+    const w = canvas.width / scale;
+    const h = canvas.height / scale;
     ctx.save();
     ctx.globalAlpha = 0.1;
     ctx.strokeStyle = themeFg;

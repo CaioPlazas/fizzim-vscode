@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0
+
+Two rendering/interaction refinements. No change to the `.fzm` format or the
+generated Verilog/VHDL (verified byte-identical against the reference corpus).
+
+- **Crisp on HiDPI displays.** The canvas is now drawn at the display's true
+  pixel density, so states, arrows, and labels are sharp on Retina / scaled
+  monitors instead of slightly soft.
+- **Grid snapping everywhere.** With the grid on, resizing a state, moving a
+  multi-selection, and dragging free text now snap to the grid — matching how
+  moving a single state already behaved.
+
 ## 1.3.1
 
 - Generate HDL output is now deterministic (Perl hash-seed pinned in the

@@ -210,16 +210,20 @@ function main(): void {
     loopbackColor: hexToColorInt(rawDefaults.loopbackColor ?? '#000000'),
   };
 
-  // The canvas is a true pixel surface at the page resolution (content-expanded)
-  // times the zoom factor. Setting the CSS size equal to the buffer size makes
-  // it display 1:1 and scroll inside #canvas-wrap, instead of being squished to
-  // fit the viewport.
+  // The canvas is laid out at the page resolution (content-expanded) times the
+  // zoom factor, in CSS pixels, so it displays 1:1 and scrolls inside
+  // #canvas-wrap. The *buffer* is that size times the device pixel ratio: on a
+  // HiDPI or fractionally-scaled display a CSS pixel is not a device pixel, and
+  // sizing the buffer in CSS pixels made the browser resample every stroke on
+  // the way to the screen. render() scales its transform by zoom x dpr to match.
+  // Mouse math is unaffected: getBoundingClientRect is CSS pixels either way.
+  const dpr = () => window.devicePixelRatio || 1;
   const resize = () => {
     const { width, height } = computeBounds(doc, page);
     const w = Math.round(width * zoom);
     const h = Math.round(height * zoom);
-    canvas.width = w;
-    canvas.height = h;
+    canvas.width = Math.round(w * dpr());
+    canvas.height = Math.round(h * dpr());
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
   };
@@ -234,7 +238,7 @@ function main(): void {
   const redraw = () => {
     const { fg, bg } = themeColors();
     render(ctx, doc, page, selection, {
-      zoom, fg, bg, group, marquee,
+      zoom, fg, bg, dpr: dpr(), group, marquee,
       fontPx: doc.preferences.fontSize,
       fontName: doc.preferences.fontName,
       lineWidth: doc.preferences.lineWidth,
@@ -461,10 +465,13 @@ function main(): void {
       if (dx !== 0 || dy !== 0) dragMoved = true;
       const s = doc.states[drag.index];
       const h = drag.handle;
-      if (h === 'tl' || h === 'bl') s.x0 = drag.origX0 + dx;
-      if (h === 'tr' || h === 'br') s.x1 = drag.origX1 + dx;
-      if (h === 'tl' || h === 'tr') s.y0 = drag.origY0 + dy;
-      if (h === 'bl' || h === 'br') s.y1 = drag.origY1 + dy;
+      // Snap the dragged edges to the grid when it's on, like state moves.
+      const g = doc.preferences.gridSize;
+      const sn = (v: number) => (doc.preferences.grid ? snap(v, g) : v);
+      if (h === 'tl' || h === 'bl') s.x0 = sn(drag.origX0 + dx);
+      if (h === 'tr' || h === 'br') s.x1 = sn(drag.origX1 + dx);
+      if (h === 'tl' || h === 'tr') s.y0 = sn(drag.origY0 + dy);
+      if (h === 'bl' || h === 'br') s.y1 = sn(drag.origY1 + dy);
       if (s.x1 <= s.x0) s.x1 = s.x0 + 5;
       if (s.y1 <= s.y0) s.y1 = s.y0 + 5;
       updateAttachedTransitions(doc, s.name);
@@ -485,8 +492,14 @@ function main(): void {
         marquee.y1 = y;
       }
     } else if (drag.kind === 'group') {
-      const dx = x - drag.startMouseX, dy = y - drag.startMouseY;
+      let dx = x - drag.startMouseX, dy = y - drag.startMouseY;
       if (dx !== 0 || dy !== 0) dragMoved = true;
+      // Snap the whole-group delta so the arrangement moves in grid steps and
+      // keeps its relative layout (rather than snapping each object).
+      if (doc.preferences.grid) {
+        dx = snap(dx, doc.preferences.gridSize);
+        dy = snap(dy, doc.preferences.gridSize);
+      }
       for (const o of drag.orig) {
         if (o.sel.kind === 'state') {
           const s = doc.states[o.sel.index];
@@ -505,8 +518,9 @@ function main(): void {
       const dx = x - drag.startMouseX, dy = y - drag.startMouseY;
       if (dx !== 0 || dy !== 0) dragMoved = true;
       const t = doc.texts[drag.index];
-      t.x = drag.origX + dx;
-      t.y = drag.origY + dy;
+      const g = doc.preferences.gridSize;
+      t.x = doc.preferences.grid ? snap(drag.origX + dx, g) : drag.origX + dx;
+      t.y = doc.preferences.grid ? snap(drag.origY + dy, g) : drag.origY + dy;
     }
     redraw();
   });

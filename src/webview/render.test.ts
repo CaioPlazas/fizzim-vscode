@@ -1,9 +1,38 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { attrIsVisible, attrLabelText, buildGlobalTableRows, buildOutputInfo, computeBounds, curveAnchor, stateAnchor, transitionOnPage, visibleAttrLabels } from './render';
+import { attrIsVisible, attrLabelText, buildGlobalTableRows, buildOutputInfo, computeBounds, curveAnchor, render, stateAnchor, transitionOnPage, visibleAttrLabels } from './render';
 import { createState, createTransition } from './edit';
 import { addInput, addOutput } from './globals';
 import { DEFAULT_PREFERENCES, FzmDocument, ObjAttribute } from '../fzm/model';
+
+// A canvas context stub recording just the transforms render() sets.
+function fakeCtx(bufferW: number, bufferH: number) {
+  const transforms: number[][] = [];
+  const ctx = {
+    canvas: { width: bufferW, height: bufferH },
+    font: '', fillStyle: '' as unknown, strokeStyle: '' as unknown, lineWidth: 0, globalAlpha: 1, textAlign: '',
+    setTransform: (...a: number[]) => void transforms.push(a),
+    fillRect: () => {}, moveTo: () => {}, lineTo: () => {}, measureText: (t: string) => ({ width: t.length * 6 }),
+    save: () => {}, restore: () => {}, beginPath: () => {}, closePath: () => {},
+    stroke: () => {}, fill: () => {}, fillText: () => {}, strokeRect: () => {}, ellipse: () => {}, bezierCurveTo: () => {}, setLineDash: () => {},
+  };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, transforms };
+}
+
+test('render scales its transform by zoom x dpr (HiDPI crispness)', () => {
+  // Guards the dpr fix: sizing the buffer in device pixels and scaling by
+  // zoom x dpr keeps strokes on real pixels instead of being resampled.
+  const { ctx, transforms } = fakeCtx(800, 600);
+  render(ctx, emptyDoc(), 1, null, { zoom: 1.5, dpr: 2, fg: '#000', bg: '#fff' });
+  assert.deepEqual(transforms[0], [1, 0, 0, 1, 0, 0], 'first transform paints the surface');
+  assert.deepEqual(transforms[1], [3, 0, 0, 3, 0, 0], 'zoom 1.5 x dpr 2 = scale 3');
+});
+
+test('render defaults to dpr 1, so export and non-HiDPI stay unscaled', () => {
+  const { ctx, transforms } = fakeCtx(400, 300);
+  render(ctx, emptyDoc(), 1, null, { zoom: 1, fg: '#000', bg: '#fff' });
+  assert.deepEqual(transforms[1], [1, 0, 0, 1, 0, 0]);
+});
 
 function attr(over: Partial<ObjAttribute>): ObjAttribute {
   return {
