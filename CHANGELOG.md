@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5.0
+
+Cross-page transition bug fixes plus interaction polish. No change to the
+`.fzm` format or the generated Verilog/VHDL (verified byte-identical against
+the reference corpus).
+
+- **Fixed: connecting a transition to a state on another page drew a broken
+  connector into the corner of the canvas.** Creating or reconnecting a
+  transition between two states that already live on different pages now
+  seeds the cross-page connector properly (the pentagon "road sign" docked at
+  the page edge), instead of leaving it aimed at the canvas origin.
+- **Fixed: a transition's page tracking could go stale** after it moved
+  between pages or got reconnected, which could throw off page counts, the
+  canvas's scrollable area, and label visibility for a cross-page transition.
+- **Fixed: a dragged stub tip or cross-page connector handle could end up
+  somewhere the canvas couldn't scroll to.** The canvas bounds now grow to
+  include them.
+- Ctrl/Cmd + mouse wheel now zooms anchored on the cursor, so the point you're
+  pointing at stays put instead of sliding away.
+- The Global Attributes dialog now cancels on Escape, like every other dialog.
+
 ## 1.4.1
 
 Bug fix and interaction polish. No change to the `.fzm` format or the

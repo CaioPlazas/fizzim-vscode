@@ -109,9 +109,18 @@ export function showGlobalEditor(doc: FzmDocument, initialTab = MACHINE): Promis
     };
 
     const cleanup = (result: FzmDocument | null) => {
+      document.removeEventListener('keydown', onKey, true);
       backdrop.remove();
       resolve(result);
     };
+    // Escape cancels, matching every other modal (textInput/formDialog/attributeDialog).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cleanup(null);
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
 
     const cellInput = (value: string, readOnly: boolean, onChange: (v: string) => void): HTMLInputElement => {
       const input = document.createElement('input');

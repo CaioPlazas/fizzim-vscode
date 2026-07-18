@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { attrIsVisible, attrLabelText, buildGlobalTableRows, buildOutputInfo, computeBounds, curveAnchor, render, stateAnchor, transitionOnPage, visibleAttrLabels } from './render';
-import { createState, createTransition } from './edit';
+import { createState, createTransition, moveStateToPage, setTransitionStub } from './edit';
 import { addInput, addOutput } from './globals';
 import { DEFAULT_PREFERENCES, FzmDocument, ObjAttribute } from '../fzm/model';
 
@@ -135,6 +135,31 @@ test('computeBounds includes transition control points', () => {
   const bounds = computeBounds(doc, 1);
   assert.ok(bounds.width >= 9000);
   assert.ok(bounds.height >= 8000);
+});
+
+test('computeBounds includes a same-page stub tip (regression: a dragged stub tip used to be excluded)', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 100, 100, 1);
+  const b = createState(doc, 400, 100, 1);
+  const t = createTransition(doc, a, b, 1);
+  setTransitionStub(doc, t, true);
+  if (t.kind === 'transition') t.pageS = { x: 9000, y: 8000 }; // drag the tip far out
+  const bounds = computeBounds(doc, 1);
+  assert.ok(bounds.width >= 9000, `width ${bounds.width} should include the dragged stub tip`);
+  assert.ok(bounds.height >= 8000, `height ${bounds.height} should include the dragged stub tip`);
+});
+
+test("computeBounds includes a cross-page connector's on-page handles (regression: excluded, so a dragged handle could land off-canvas)", () => {
+  const doc = emptyDoc();
+  doc.tabs.push('Page 2');
+  const a = createState(doc, 100, 100, 1);
+  const b = createState(doc, 400, 100, 1);
+  const t = createTransition(doc, a, b, 1);
+  moveStateToPage(doc, doc.states.indexOf(b), 2); // now cross-page
+  if (t.kind === 'transition') t.pageS = { x: 9000, y: 8000 }; // drag the source handle far out
+  const boundsPage1 = computeBounds(doc, 1);
+  assert.ok(boundsPage1.width >= 9000, `page 1 width ${boundsPage1.width} should include the dragged source handle`);
+  assert.ok(boundsPage1.height >= 8000, `page 1 height ${boundsPage1.height} should include the dragged source handle`);
 });
 
 test('buildGlobalTableRows lists non-empty sections with headers, "reg" shown as statebit', () => {

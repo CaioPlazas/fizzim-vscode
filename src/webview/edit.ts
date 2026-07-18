@@ -1,4 +1,4 @@
-import { FzmDocument, FzmLoopback, FzmState, FzmText, FzmTransition, ObjAttribute, Point } from '../fzm/model';
+import { FzmDocument, FzmLoopback, FzmState, FzmText, FzmTransition, ObjAttribute } from '../fzm/model';
 import { Selection } from './hitTest';
 import { createLoopbackGeometry, createStubGeometry, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
 
@@ -125,29 +125,36 @@ export function createTransition(doc: FzmDocument, startState: FzmState, endStat
     doc.transitions.map((t) => t.name),
     'trans'
   );
-  const zero: Point = { x: 0, y: 0 };
   const transition: FzmTransition = {
     kind: 'transition',
     name,
     startState: startState.name,
     endState: endState.name,
-    startPt: zero,
-    endPt: zero,
-    startCtrlPt: zero,
-    endCtrlPt: zero,
+    startPt: { x: 0, y: 0 },
+    endPt: { x: 0, y: 0 },
+    startCtrlPt: { x: 0, y: 0 },
+    endCtrlPt: { x: 0, y: 0 },
     startStateIndex: 0,
     endStateIndex: 0,
     page,
     color,
-    pageS: zero,
-    pageSC: zero,
-    pageE: zero,
-    pageEC: zero,
+    pageS: { x: 0, y: 0 },
+    pageSC: { x: 0, y: 0 },
+    pageE: { x: 0, y: 0 },
+    pageEC: { x: 0, y: 0 },
     stub: false,
     attributes: [makeAttribute('name', name, 0, page), makeAttribute('equation', '1', 1, page)],
   };
-  recomputeTransition(transition, startState, endState);
+  // Pushed before seeding geometry: recomputeCrossPage's sibling-stagger offset
+  // (crossPageOffset) looks this transition up in doc.transitions by identity.
   doc.transitions.push(transition);
+  // A transition created between two states that already live on different
+  // pages seeds the cross-page connector (pentagon "road sign" docked at the
+  // page edge) instead of the same-page bezier - which would otherwise aim at
+  // (0,0) forever, since startPt/endPt/control points are never touched again
+  // until something moves. Mirrors StateTransitionObj.setEndPts' own branch.
+  if (startState.page !== endState.page) recomputeCrossPage(doc, transition);
+  else recomputeTransition(transition, startState, endState);
   return transition;
 }
 
@@ -156,12 +163,37 @@ export interface EditResult {
   error?: string;
 }
 
+// Re-pages a normal transition's own `page` field and its attribute labels
+// after either endpoint's page changes (the state itself moved to another
+// page, or the transition got reconnected to a state on another page).
+// Mirrors StateTransitionObj.updateObj's cascade: a label that was on the old
+// start/end page follows its endpoint to the new one; a transition that just
+// became cross-page (it wasn't before - oldStartPage === oldEndPage) dumps
+// every label onto the new start page, since Java doesn't split labels across
+// pages except via the user's explicit "Move to Page". The transition's own
+// page always tracks its start state's page, like Java's myPage = sPage.
+function repageTransition(t: FzmTransition, oldStartPage: number, oldEndPage: number, newStartPage: number, newEndPage: number): void {
+  if (oldStartPage !== newStartPage && oldStartPage !== oldEndPage) {
+    for (const a of t.attributes) if (a.page === oldStartPage) a.page = newStartPage;
+  }
+  if (oldEndPage !== newEndPage && oldStartPage !== oldEndPage) {
+    for (const a of t.attributes) if (a.page === oldEndPage) a.page = newEndPage;
+  }
+  if (newStartPage !== newEndPage && oldStartPage === oldEndPage) {
+    for (const a of t.attributes) a.page = newStartPage;
+  }
+  t.page = newStartPage;
+}
+
 // Moves a state (and its attributes + attached loopbacks) to another page.
 // Normal transitions to states still on other pages become cross-page and are
 // simply not drawn until both endpoints share a page again.
 export function moveStateToPage(doc: FzmDocument, index: number, newPage: number): void {
   const s = doc.states[index];
   const name = s.name;
+  // Pre-move snapshot of every state's page, so the re-page cascade below can
+  // tell what each attached transition's endpoints' pages *were*.
+  const oldPageOf = new Map(doc.states.map((st) => [st.name, st.page]));
   s.page = newPage;
   for (const a of s.attributes) a.page = newPage;
   for (const t of doc.transitions) {
@@ -179,6 +211,7 @@ export function moveStateToPage(doc: FzmDocument, index: number, newPage: number
     const a = byName.get(t.startState);
     const b = byName.get(t.endState);
     if (!a || !b) continue;
+    repageTransition(t, oldPageOf.get(t.startState)!, oldPageOf.get(t.endState)!, a.page, b.page);
     if (a.page !== b.page) recomputeCrossPage(doc, t);
     else recomputeTransition(t, a, b);
   }
@@ -568,9 +601,16 @@ export function reconnectTransition(doc: FzmDocument, index: number, startName: 
   const start = doc.states.find((s) => s.name === startName);
   const end = doc.states.find((s) => s.name === endName);
   if (!start || !end) return { ok: false, error: 'Unknown state.' };
+  const oldStart = doc.states.find((s) => s.name === t.startState);
+  const oldEnd = doc.states.find((s) => s.name === t.endState);
+  repageTransition(t, oldStart?.page ?? t.page, oldEnd?.page ?? t.page, start.page, end.page);
   t.startState = startName;
   t.endState = endName;
-  recomputeTransition(t, start, end);
+  // Reconnecting to a state on another page may make this transition
+  // cross-page (or same-page again) - re-seed the right geometry either way,
+  // just like a state move (moveStateToPage / StateTransitionObj.setEndPts).
+  if (start.page !== end.page) recomputeCrossPage(doc, t);
+  else recomputeTransition(t, start, end);
   return { ok: true };
 }
 

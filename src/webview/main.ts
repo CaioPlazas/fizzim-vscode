@@ -367,16 +367,38 @@ function main(): void {
   canvas.style.outline = 'none';
   canvas.focus();
 
-  // Mouse position in model coordinates (undo the zoom scaling).
-  const toCanvasCoords = (e: MouseEvent) => {
+  // Mouse position in model coordinates (undo the zoom scaling). Takes anything
+  // with clientX/clientY, so it works for a MouseEvent or a bare point.
+  const toCanvasCoords = (e: { clientX: number; clientY: number }) => {
     const rect = canvas.getBoundingClientRect();
     return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
   };
 
-  const applyZoom = (next: number) => {
-    zoom = Math.min(4, Math.max(0.1, next));
+  // Zooms while keeping the model point under (clientX, clientY) fixed on
+  // screen - the canvas scrolls inside #canvas-wrap, so after resizing the
+  // buffer we set the wrap's scroll so that point lands back under the same
+  // pixel. Derivation:
+  //   canvasLeft = wrapLeft - scrollLeft;  screenX = canvasLeft + mx*zoom
+  //   want screenX == clientX  =>  scrollLeft = wrapLeft + mx*zoom - clientX
+  const applyZoomAt = (next: number, clientX: number, clientY: number) => {
+    const wrap = canvas.parentElement;
+    const clamped = Math.min(4, Math.max(0.1, next));
+    if (!wrap || clamped === zoom) return;
+    const { x: mx, y: my } = toCanvasCoords({ clientX, clientY }); // pre-zoom model point
+    zoom = clamped;
     resize();
+    const wrapRect = wrap.getBoundingClientRect();
+    wrap.scrollLeft = wrapRect.left + mx * zoom - clientX;
+    wrap.scrollTop = wrapRect.top + my * zoom - clientY;
     redraw();
+  };
+  // Button/menu zoom has no cursor to anchor on, so it anchors on the
+  // viewport's centre instead.
+  const applyZoom = (next: number) => {
+    const wrap = canvas.parentElement;
+    if (!wrap) { zoom = Math.min(4, Math.max(0.1, next)); resize(); redraw(); return; }
+    const r = wrap.getBoundingClientRect();
+    applyZoomAt(next, r.left + r.width / 2, r.top + r.height / 2);
   };
   const fitToView = () => {
     const wrap = canvas.parentElement;
@@ -1251,13 +1273,14 @@ function main(): void {
     });
   }
 
-  // Ctrl/Cmd + mouse wheel zooms, like most diagram editors.
+  // Ctrl/Cmd + mouse wheel zooms, like most diagram editors - anchored on the
+  // cursor so the point you're pointing at stays put instead of sliding away.
   canvas.addEventListener(
     'wheel',
     (e) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      applyZoom(e.deltaY < 0 ? zoom * 1.1 : zoom / 1.1);
+      applyZoomAt(e.deltaY < 0 ? zoom * 1.1 : zoom / 1.1, e.clientX, e.clientY);
     },
     { passive: false }
   );
