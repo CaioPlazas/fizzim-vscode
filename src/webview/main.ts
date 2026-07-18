@@ -2,7 +2,7 @@ import type { FzmDocument } from '../fzm/model';
 import { parseFzm } from '../fzm/parser';
 import { serializeFzm } from '../fzm/serializer';
 import { attrIsVisible, AttrLabelTarget, computeBounds, hitAttrLabel, render, transitionOnPage } from './render';
-import { crossPageSide, CurveHandle, hitTest, normRect, objectsInBox, Selection, StateHandle, stateHandleAt, transitionHandleAt } from './hitTest';
+import { connectAnchorAt, crossPageSide, CurveHandle, hitTest, normRect, objectsInBox, Selection, StateHandle, stateHandleAt, transitionHandleAt } from './hitTest';
 import { nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
 import {
   applyAttributeEdits,
@@ -67,6 +67,7 @@ type DragState =
       origY1: number;
     }
   | { kind: 'curve'; index: number; handle: CurveHandle }
+  | { kind: 'connect'; fromIndex: number; to: { x: number; y: number }; target: number | null }
   | { kind: 'attrLabel'; target: AttrLabelTarget; startMouseX: number; startMouseY: number; origX2: number; origY2: number }
   | { kind: 'text'; index: number; startMouseX: number; startMouseY: number; origX: number; origY: number }
   | { kind: 'marquee'; startMouseX: number; startMouseY: number }
@@ -192,6 +193,9 @@ function main(): void {
   let drag: DragState | null = null;
   let dragMoved = false;
   let zoom = 1;
+  // Panning the view by scrolling #canvas-wrap: space-drag or middle-drag.
+  let spaceHeld = false;
+  let pan: { startX: number; startY: number; scrollL: number; scrollT: number } | null = null;
 
   const selKey = (s: Selection) => `${s.kind}:${s.index}`;
   const selKeyOrNull = (s: Selection | null) => (s ? selKey(s) : '');
@@ -294,7 +298,11 @@ function main(): void {
 
   const redraw = () => {
     render(ctx, doc, page, selection, {
-      zoom, theme: readTheme(surface), dpr: dpr(), group, marquee, hover,
+      zoom, theme: readTheme(surface), dpr: dpr(), group, marquee,
+      // Hover visuals (fill lift, connect anchors) are suppressed during any
+      // drag; a connect drag draws its own overlay instead.
+      hover: drag ? null : hover,
+      connect: drag && drag.kind === 'connect' ? { fromState: drag.fromIndex, to: drag.to, target: drag.target } : null,
       fontPx: doc.preferences.fontSize,
       fontName: doc.preferences.fontName,
       lineWidth: doc.preferences.lineWidth,
@@ -393,16 +401,37 @@ function main(): void {
   canvas.style.outline = 'none';
   canvas.focus();
 
-  // Mouse position in model coordinates (undo the zoom scaling).
-  const toCanvasCoords = (e: MouseEvent) => {
+  // Mouse position in model coordinates (undo the zoom scaling). Takes anything
+  // with clientX/clientY, so it works for a MouseEvent or a bare point.
+  const toCanvasCoords = (e: { clientX: number; clientY: number }) => {
     const rect = canvas.getBoundingClientRect();
     return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
   };
 
-  const applyZoom = (next: number) => {
-    zoom = Math.min(4, Math.max(0.1, next));
+  // Zoom while keeping the model point under (clientX, clientY) fixed on screen.
+  // The canvas scrolls inside #canvas-wrap, so after resizing the buffer we set
+  // the wrap's scroll so that point lands back under the same pixel. Derivation:
+  //   canvasLeft = wrapLeft - scrollLeft;  screenX = canvasLeft + mx*zoom
+  //   want screenX == clientX  =>  scrollLeft = wrapLeft + mx*zoom - clientX
+  const applyZoomAt = (next: number, clientX: number, clientY: number) => {
+    const wrap = canvas.parentElement;
+    const clamped = Math.min(4, Math.max(0.1, next));
+    if (!wrap || clamped === zoom) return;
+    const { x: mx, y: my } = toCanvasCoords({ clientX, clientY }); // pre-zoom model point
+    zoom = clamped;
     resize();
+    const wrapRect = wrap.getBoundingClientRect();
+    wrap.scrollLeft = wrapRect.left + mx * zoom - clientX;
+    wrap.scrollTop = wrapRect.top + my * zoom - clientY;
     redraw();
+  };
+
+  // Button / command zoom anchors on the viewport centre (there's no cursor).
+  const applyZoom = (next: number) => {
+    const wrap = canvas.parentElement;
+    if (!wrap) { zoom = Math.min(4, Math.max(0.1, next)); resize(); redraw(); return; }
+    const r = wrap.getBoundingClientRect();
+    applyZoomAt(next, r.left + r.width / 2, r.top + r.height / 2);
   };
   const fitToView = () => {
     const wrap = canvas.parentElement;
@@ -435,9 +464,29 @@ function main(): void {
   };
 
   canvas.addEventListener('mousedown', (e) => {
+    // Pan: middle-button drag, or left-drag with Space held. Grabs the view and
+    // scrolls #canvas-wrap; never touches the model, so it can't select or move
+    // anything. Checked before everything else.
+    const wrap = canvas.parentElement;
+    if (wrap && (e.button === 1 || (spaceHeld && e.button === 0))) {
+      pan = { startX: e.clientX, startY: e.clientY, scrollL: wrap.scrollLeft, scrollT: wrap.scrollTop };
+      canvas.style.cursor = 'grabbing';
+      e.preventDefault();
+      return;
+    }
+    if (e.button !== 0) return; // only the left button interacts with the model
     const { x, y } = toCanvasCoords(e);
     dragMoved = false;
     const tol = TOL();
+
+    // Drag-to-connect: pressing a connect anchor of the hovered state starts a
+    // new transition. Anchors are on the border and only show on hover, so this
+    // can't be confused with grabbing the body to move it. Checked first.
+    if (hover?.kind === 'state' && connectAnchorAt(doc.states[hover.index], x, y, tol * 1.6)) {
+      drag = { kind: 'connect', fromIndex: hover.index, to: { x, y }, target: null };
+      redraw();
+      return;
+    }
 
     // Attribute labels (state name, outputs, equation, priority, …) are grabbed
     // before shapes/handles, matching Java — clicking the text moves just that
@@ -520,11 +569,19 @@ function main(): void {
     return h ? 'move' : 'default';
   };
   canvas.addEventListener('mousemove', (e) => {
-    if (drag) return;
+    if (drag || pan) return;
     const { x, y } = toCanvasCoords(e);
     if (posEl) posEl.textContent = `${Math.round(x)}, ${Math.round(y)}`;
-    const next = hitTest(ctx, doc, page, x, y);
-    canvas.style.cursor = hoverCursor(next, handleAt(x, y));
+    // In pan mode the grab cursor wins over hover feedback.
+    if (spaceHeld) return;
+    let next = hitTest(ctx, doc, page, x, y);
+    // A connect anchor sits just outside the border, where hitTest misses — keep
+    // the state hovered while the cursor is on one, so its anchors stay grabbable.
+    if (!next && hover?.kind === 'state' && connectAnchorAt(doc.states[hover.index], x, y, TOL() * 1.8)) {
+      next = hover;
+    }
+    const onAnchor = next?.kind === 'state' && !!connectAnchorAt(doc.states[next.index], x, y, TOL() * 1.6);
+    canvas.style.cursor = onAnchor ? 'crosshair' : hoverCursor(next, handleAt(x, y));
     if (selKeyOrNull(next) === selKeyOrNull(hover)) return;
     hover = next;
     redraw();
@@ -537,8 +594,24 @@ function main(): void {
   });
 
   window.addEventListener('mousemove', (e) => {
+    if (pan) {
+      const wrap = canvas.parentElement;
+      if (wrap) {
+        wrap.scrollLeft = pan.scrollL - (e.clientX - pan.startX);
+        wrap.scrollTop = pan.scrollT - (e.clientY - pan.startY);
+      }
+      return;
+    }
     if (!drag) return;
     const { x, y } = toCanvasCoords(e);
+    if (drag.kind === 'connect') {
+      dragMoved = true;
+      drag.to = { x, y };
+      const hit = hitTest(ctx, doc, page, x, y);
+      drag.target = hit?.kind === 'state' ? hit.index : null;
+      redraw();
+      return;
+    }
     if (drag.kind === 'state') {
       const dx = x - drag.startMouseX, dy = y - drag.startMouseY;
       if (dx !== 0 || dy !== 0) dragMoved = true;
@@ -559,10 +632,13 @@ function main(): void {
       if (dx !== 0 || dy !== 0) dragMoved = true;
       const s = doc.states[drag.index];
       const h = drag.handle;
-      if (h === 'tl' || h === 'bl') s.x0 = drag.origX0 + dx;
-      if (h === 'tr' || h === 'br') s.x1 = drag.origX1 + dx;
-      if (h === 'tl' || h === 'tr') s.y0 = drag.origY0 + dy;
-      if (h === 'bl' || h === 'br') s.y1 = drag.origY1 + dy;
+      // Snap the dragged edges to the grid when it's on, like state moves.
+      const g = doc.preferences.gridSize;
+      const sn = (v: number) => (doc.preferences.grid ? snap(v, g) : v);
+      if (h === 'tl' || h === 'bl') s.x0 = sn(drag.origX0 + dx);
+      if (h === 'tr' || h === 'br') s.x1 = sn(drag.origX1 + dx);
+      if (h === 'tl' || h === 'tr') s.y0 = sn(drag.origY0 + dy);
+      if (h === 'bl' || h === 'br') s.y1 = sn(drag.origY1 + dy);
       if (s.x1 <= s.x0) s.x1 = s.x0 + 5;
       if (s.y1 <= s.y0) s.y1 = s.y0 + 5;
       updateAttachedTransitions(doc, s.name);
@@ -583,8 +659,14 @@ function main(): void {
         marquee.y1 = y;
       }
     } else if (drag.kind === 'group') {
-      const dx = x - drag.startMouseX, dy = y - drag.startMouseY;
+      let dx = x - drag.startMouseX, dy = y - drag.startMouseY;
       if (dx !== 0 || dy !== 0) dragMoved = true;
+      // Snap the whole-group delta to the grid so the arrangement moves in grid
+      // steps and keeps its relative layout (rather than snapping each object).
+      if (doc.preferences.grid) {
+        dx = snap(dx, doc.preferences.gridSize);
+        dy = snap(dy, doc.preferences.gridSize);
+      }
       for (const o of drag.orig) {
         if (o.sel.kind === 'state') {
           const s = doc.states[o.sel.index];
@@ -603,13 +685,45 @@ function main(): void {
       const dx = x - drag.startMouseX, dy = y - drag.startMouseY;
       if (dx !== 0 || dy !== 0) dragMoved = true;
       const t = doc.texts[drag.index];
-      t.x = drag.origX + dx;
-      t.y = drag.origY + dy;
+      const g = doc.preferences.gridSize;
+      t.x = doc.preferences.grid ? snap(drag.origX + dx, g) : drag.origX + dx;
+      t.y = doc.preferences.grid ? snap(drag.origY + dy, g) : drag.origY + dy;
     }
     redraw();
   });
 
   window.addEventListener('mouseup', () => {
+    if (pan) {
+      pan = null;
+      canvas.style.cursor = spaceHeld ? 'grab' : 'default';
+      return;
+    }
+    if (drag && drag.kind === 'connect') {
+      const { fromIndex, target } = drag;
+      const moved = dragMoved;
+      const from = doc.states[fromIndex];
+      drag = null;
+      // A plain click on an anchor (no drag) just selects the state, like
+      // clicking its body. A drag ending over empty space is a cancel.
+      if (!moved || target === null || !from) {
+        if (!moved) selection = { kind: 'state', index: fromIndex };
+        redraw();
+        return;
+      }
+      // Drag to another state -> transition; back onto itself -> loopback.
+      if (target === fromIndex) {
+        const lp = createLoopback(doc, from, from.x0 + (from.x1 - from.x0) / 2, from.y0, page, defaults.loopbackColor);
+        selection = { kind: 'transition', index: doc.transitions.indexOf(lp) };
+      } else {
+        const t = createTransition(doc, from, doc.states[target], page, defaults.transitionColor);
+        selection = { kind: 'transition', index: doc.transitions.indexOf(t) };
+      }
+      group = [];
+      resize();
+      redraw();
+      commit();
+      return;
+    }
     if (drag && drag.kind === 'marquee') {
       if (marquee && dragMoved) {
         group = objectsInBox(doc, page, normRect(marquee.x0, marquee.y0, marquee.x1, marquee.y1));
@@ -992,6 +1106,18 @@ function main(): void {
     const el = e.target as HTMLElement | null;
     const inField = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
 
+    // Hold Space to pan: the cursor becomes a grab hand and a left-drag scrolls
+    // the view instead of selecting. preventDefault stops Space from scrolling
+    // the page / clicking a focused button.
+    if (e.code === 'Space' && !inField) {
+      e.preventDefault();
+      if (!spaceHeld) {
+        spaceHeld = true;
+        if (!pan) canvas.style.cursor = 'grab';
+      }
+      return;
+    }
+
     // Arrow keys nudge the selected state (a convenience; not in original Fizzim).
     const nudge: Record<string, [number, number]> = {
       ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
@@ -1054,6 +1180,20 @@ function main(): void {
     }
   });
 
+  // Releasing Space leaves pan mode. If a pan drag is still in progress the
+  // mouseup handler resets the cursor; otherwise clear it here.
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') {
+      spaceHeld = false;
+      if (!pan) canvas.style.cursor = 'default';
+    }
+  });
+  // Losing focus (Alt-Tab away mid-pan) shouldn't leave Space "stuck" held.
+  window.addEventListener('blur', () => {
+    spaceHeld = false;
+    if (!pan) canvas.style.cursor = 'default';
+  });
+
   // Two editing surfaces, no overlap: the edit bar (always visible, common
   // fields, live) and — for the rare full-attribute edit — the complete property
   // dialog opened here. Double-click / Enter / right-click "Properties" all reach
@@ -1085,6 +1225,10 @@ function main(): void {
       commit,
       message: (m) => void showMessage(m),
       openAllAttributes: openProperties,
+      // The pin is a view pref (not in the .fzm): seeded from the injected
+      // setting, written back through the host so it survives a reload.
+      getExpanded: () => (window as unknown as { __FZM_EDITBAR_EXPANDED__?: boolean }).__FZM_EDITBAR_EXPANDED__ === true,
+      setExpanded: (v) => vscode.postMessage({ type: 'setEditBarExpanded', value: v }),
     });
     refreshEditBar = () => editBar.refresh();
     editBar.refresh();
@@ -1325,13 +1469,14 @@ function main(): void {
     surfaceToggle.addEventListener('change', () => setSurface(surfaceToggle.checked ? 'theme' : 'paper'));
   }
 
-  // Ctrl/Cmd + mouse wheel zooms, like most diagram editors.
+  // Ctrl/Cmd + mouse wheel zooms toward the cursor, like every modern diagram
+  // editor — the point under the mouse stays put instead of drifting.
   canvas.addEventListener(
     'wheel',
     (e) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      applyZoom(e.deltaY < 0 ? zoom * 1.1 : zoom / 1.1);
+      applyZoomAt(e.deltaY < 0 ? zoom * 1.1 : zoom / 1.1, e.clientX, e.clientY);
     },
     { passive: false }
   );

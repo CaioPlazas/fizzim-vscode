@@ -48,6 +48,9 @@ export interface EditBarHost {
   message(msg: string): void;
   /** Open the full attribute table for the current object (the rare long tail). */
   openAllAttributes(sel: Selection): void;
+  /** The persisted expand/pin state and a setter (a view pref, not in the .fzm). */
+  getExpanded(): boolean;
+  setExpanded(v: boolean): void;
 }
 
 // --- compact horizontal field builders --------------------------------------
@@ -112,9 +115,9 @@ function sep(): HTMLElement {
 
 export function buildEditBar(container: HTMLElement, host: EditBarHost): { refresh(): void } {
   let lastKey = ' ';
-  // Pinned vertical expansion. Closure state, so it survives selection changes
-  // for the session (that's the "pin"); toggling it forces a rebuild.
-  let expanded = false;
+  // Pinned vertical expansion. Seeded from the persisted view pref and written
+  // back on toggle, so the pin survives selection changes AND reloads.
+  let expanded = host.getExpanded();
 
   const keyOf = (): string => {
     const g = host.getGroup();
@@ -264,7 +267,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
     b.className = 'eb-icon' + (expanded ? ' active' : '');
     b.title = expanded ? 'Collapse to one row' : 'Expand to rows (stays pinned)';
     b.innerHTML = `<span class="codicon codicon-${expanded ? 'chevron-up' : 'chevron-down'}"></span>`;
-    b.addEventListener('click', () => { expanded = !expanded; build(); });
+    b.addEventListener('click', () => { expanded = !expanded; host.setExpanded(expanded); build(); });
     return b;
   };
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.1 — canvas interaction (pre-release)
+
+Adds modern canvas interaction on top of 2.0.0. Still `.fzm`- and
+HDL-compatible with v1 (serializer unchanged).
+
+- **Pan** the view with a middle-drag or by holding **Space** and dragging.
+- **Zoom to the cursor** with Ctrl/Cmd + mouse wheel — the point under the
+  mouse stays put.
+- **Drag-to-connect**: hover a state to reveal its border anchors, then drag
+  from one to another state to create a transition (drop back on itself for a
+  loopback). The right-click menu still works as a fallback.
+- **Snap to grid** while dragging — states, resizes, group moves, and free text
+  all snap when the grid is on.
+- The edit bar's expanded (pinned) state now persists across reloads.
+
 ## 2.0.0 — visual & UX modernization (pre-release)
 
 First pre-release of the v2 line — a ground-up modernization of the look and

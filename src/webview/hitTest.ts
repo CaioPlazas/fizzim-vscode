@@ -1,5 +1,15 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmTransition, Point } from '../fzm/model';
-import { pentagonOrigin, sameStub, textBounds, transitionOnPage } from './render';
+import { pentagonOrigin, sameStub, stateConnectAnchors, textBounds, transitionOnPage } from './render';
+
+// The connect anchor near (x, y), or null. Larger tolerance than a handle: the
+// anchor is the grab point for a fresh transition, so it should be forgiving.
+// (Anchor geometry lives in render.ts, next to where it's drawn.)
+export function connectAnchorAt(s: FzmState, x: number, y: number, tol: number): Point | null {
+  for (const a of stateConnectAnchors(s)) {
+    if (Math.abs(a.x - x) <= tol && Math.abs(a.y - y) <= tol) return a;
+  }
+  return null;
+}
 
 function distToSegment(px: number, py: number, a: Point, b: Point): number {
   const dx = b.x - a.x;

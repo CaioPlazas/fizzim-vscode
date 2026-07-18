@@ -43,7 +43,8 @@ class FizzimEditorProvider implements vscode.CustomTextEditorProvider {
       this.extensionUri,
       document.getText(),
       canvasSurface(cfg),
-      defaults
+      defaults,
+      cfg.get<boolean>('editBarExpanded', false)
     );
 
     if (webviewPanel.active) this.activePanel = webviewPanel;
@@ -92,6 +93,10 @@ class FizzimEditorProvider implements vscode.CustomTextEditorProvider {
         await vscode.workspace
           .getConfiguration('fizzim')
           .update('canvasSurface', mode, vscode.ConfigurationTarget.Global);
+      } else if (msg.type === 'setEditBarExpanded') {
+        await vscode.workspace
+          .getConfiguration('fizzim')
+          .update('editBarExpanded', Boolean(msg.value), vscode.ConfigurationTarget.Global);
       } else if (msg.type === 'command' && typeof msg.command === 'string') {
         // Menu-bar items that map to VS Code commands (New/Open/Save/Save As).
         await vscode.commands.executeCommand(msg.command);
@@ -195,7 +200,8 @@ function getHtml(
   extensionUri: vscode.Uri,
   text: string,
   surface: 'paper' | 'theme',
-  defaults: { stateColor: string; transitionColor: string; loopbackColor: string }
+  defaults: { stateColor: string; transitionColor: string; loopbackColor: string },
+  editBarExpanded: boolean
 ): string {
   const nonce = getNonce();
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview.js'));
@@ -218,7 +224,7 @@ function getHtml(
 </head>
 <body>
 ${body}
-  <script nonce="${nonce}">window.__FZM_TEXT__ = ${JSON.stringify(text)}; window.__FZM_SURFACE__ = ${JSON.stringify(surface)}; window.__FZM_DEFAULTS__ = ${JSON.stringify(defaults)};</script>
+  <script nonce="${nonce}">window.__FZM_TEXT__ = ${JSON.stringify(text)}; window.__FZM_SURFACE__ = ${JSON.stringify(surface)}; window.__FZM_DEFAULTS__ = ${JSON.stringify(defaults)}; window.__FZM_EDITBAR_EXPANDED__ = ${editBarExpanded ? 'true' : 'false'};</script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

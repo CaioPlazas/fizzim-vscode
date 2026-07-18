@@ -84,10 +84,28 @@ export interface RenderOptions {
   hover?: Selection | null;
   group?: Selection[];
   marquee?: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** An in-progress drag-to-connect: rubber-band from a source state to a point. */
+  connect?: { fromState: number; to: Point; target: number | null } | null;
 }
 
 const sameSel = (a: Selection | null, b: Selection | null): boolean =>
   !!a && !!b && a.kind === b.kind && a.index === b.index;
+
+// The four connect anchors on a state's border (top, right, bottom, left) —
+// where a drag-to-connect gesture starts. Kept here, next to where they're
+// drawn; hitTest.ts imports this for the grab test.
+export function stateConnectAnchors(s: FzmState): Point[] {
+  const rx = (s.x1 - s.x0) / 2;
+  const ry = (s.y1 - s.y0) / 2;
+  const cx = s.x0 + rx;
+  const cy = s.y0 + ry;
+  return [
+    { x: cx, y: cy - ry },
+    { x: cx + rx, y: cy },
+    { x: cx, y: cy + ry },
+    { x: cx - rx, y: cy },
+  ];
+}
 
 // The color to actually draw an object with: its stored color, except the
 // default black is swapped for a theme token so black shapes stay visible on a
@@ -847,6 +865,57 @@ export function render(
     ctx.strokeStyle = theme.accent;
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, w, h);
+  }
+
+  // Drag-to-connect: the rubber-band from the source state to the cursor, plus a
+  // ring around the state it would land on. When nothing is being connected, a
+  // hovered state shows its four connect anchors (the grab points).
+  if (opts.connect) {
+    const from = doc.states[opts.connect.fromState];
+    const to = opts.connect.to;
+    if (from) {
+      // Start the line at the source-border anchor nearest the cursor.
+      let start = from ? stateConnectAnchors(from)[0] : to;
+      let best = Infinity;
+      for (const a of stateConnectAnchors(from)) {
+        const d = Math.hypot(a.x - to.x, a.y - to.y);
+        if (d < best) { best = d; start = a; }
+      }
+      if (opts.connect.target !== null) {
+        const t = doc.states[opts.connect.target];
+        if (t) {
+          const rx = (t.x1 - t.x0) / 2, ry = (t.y1 - t.y0) / 2;
+          ctx.strokeStyle = theme.accent;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.ellipse(t.x0 + rx, t.y0 + ry, rx + 3, ry + 3, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.strokeStyle = theme.accent;
+      ctx.fillStyle = theme.accent;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawArrowhead(ctx, start, to);
+    }
+  } else if (hover?.kind === 'state') {
+    const s = doc.states[hover.index];
+    if (s && s.page === page) {
+      ctx.fillStyle = theme.surface;
+      ctx.strokeStyle = theme.accent;
+      ctx.lineWidth = 1.5;
+      for (const a of stateConnectAnchors(s)) {
+        ctx.beginPath();
+        ctx.ellipse(a.x, a.y, 4, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);

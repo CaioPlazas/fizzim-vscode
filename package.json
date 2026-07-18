@@ -2,7 +2,7 @@
   "name": "fizzim-vscode",
   "displayName": "Fizzim FSM Editor",
   "description": "Draw finite state machines and generate synthesizable Verilog/VHDL — a native VS Code editor for Fizzim (.fzm) diagrams.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "CaioPlazas",
   "license": "GPL-3.0-or-later",
   "icon": "icon.png",
@@ -269,6 +269,11 @@
           ],
           "default": "paper",
           "description": "Background the diagram canvas is drawn on. Exported PNG/JPEG images are always 'paper', whichever mode you work in. Also toggleable from the editor's View menu."
+        },
+        "fizzim.editBarExpanded": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep the edit bar expanded to multiple rows (pinned) instead of a single paged row. Also toggled by the chevron on the edit bar itself."
         },
         "fizzim.darkMode": {
           "type": "boolean",
