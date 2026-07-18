@@ -192,6 +192,7 @@ function main(): void {
   let marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
   let drag: DragState | null = null;
   let dragMoved = false;
+  let nudgeCommitTimer: ReturnType<typeof setTimeout> | null = null;
   let zoom = 1;
   // Panning the view by scrolling #canvas-wrap: space-drag or middle-drag.
   let spaceHeld = false;
@@ -206,6 +207,15 @@ function main(): void {
   // it round-trips through the fizzim.canvasSurface setting via the host.
   let surface: SurfaceMode =
     (window as unknown as { __FZM_SURFACE__?: SurfaceMode }).__FZM_SURFACE__ === 'theme' ? 'theme' : 'paper';
+
+  // readTheme() calls getComputedStyle(document.body), a forced style
+  // recalculation - cheap once, but redraw() runs on every drag mousemove, so
+  // doing it unconditionally there was a per-frame layout cost. Cache it and
+  // only recompute when something that could change it actually happens: the
+  // VS Code theme switching (themeObserver, below) or the surface toggle.
+  let cachedTheme: ReturnType<typeof readTheme> | null = null;
+  const currentTheme = () => (cachedTheme ??= readTheme(surface));
+  const invalidateTheme = () => { cachedTheme = null; };
 
   // Default colors for newly created objects (Fizzim's Pref defaults). Kept
   // outside the .fzm (app-level, like Fizzim) — seeded from the fizzim.default*
@@ -295,10 +305,14 @@ function main(): void {
   // can call it unconditionally; it only rebuilds when the selection identity
   // changes, so calling it every redraw is cheap and never steals focus.
   let refreshEditBar = () => {};
+  // Forces the edit bar to rebuild even when the selection hasn't changed -
+  // for after a modal property dialog edits the very object it's showing
+  // (rename, reconnect, etc.), so the bar's fields don't sit stale.
+  let rebuildEditBar = () => {};
 
   const redraw = () => {
     render(ctx, doc, page, selection, {
-      zoom, theme: readTheme(surface), dpr: dpr(), group, marquee,
+      zoom, theme: currentTheme(), dpr: dpr(), group, marquee,
       // Hover visuals (fill lift, connect anchors) are suppressed during any
       // drag; a connect drag draws its own overlay instead.
       hover: drag ? null : hover,
@@ -311,6 +325,18 @@ function main(): void {
     });
     updateCounts();
     refreshEditBar();
+  };
+  // Coalesces redraws to once per animation frame. High-polling-rate mice can
+  // fire mousemove well above 60Hz; without this each event would trigger a
+  // full canvas re-render, most of which the screen never has a chance to show.
+  let redrawScheduled = false;
+  const scheduleRedraw = () => {
+    if (redrawScheduled) return;
+    redrawScheduled = true;
+    requestAnimationFrame(() => {
+      redrawScheduled = false;
+      redraw();
+    });
   };
   // Push the current model back to the extension host, which writes it to the
   // TextDocument (making the tab dirty; Ctrl+S persists it to the .fzm file).
@@ -397,6 +423,25 @@ function main(): void {
   redraw();
   renderPageTabs();
 
+  // Re-crisps the canvas when devicePixelRatio changes - e.g. the VS Code
+  // window is dragged to a monitor with different display scaling. A
+  // matchMedia query for the current ratio fires 'change' the moment it stops
+  // matching (i.e. the ratio just changed); resolution match queries are a
+  // point-in-time snapshot, so we re-subscribe at the new ratio each time.
+  const watchDprChanges = () => {
+    const mq = window.matchMedia(`(resolution: ${dpr()}dppx)`);
+    mq.addEventListener(
+      'change',
+      () => {
+        resize();
+        redraw();
+        watchDprChanges();
+      },
+      { once: true }
+    );
+  };
+  watchDprChanges();
+
   canvas.tabIndex = 0;
   canvas.style.outline = 'none';
   canvas.focus();
@@ -443,7 +488,7 @@ function main(): void {
   };
 
   // Redraw when the VS Code theme changes (it swaps the body class / CSS vars).
-  const themeObserver = new MutationObserver(() => redraw());
+  const themeObserver = new MutationObserver(() => { invalidateTheme(); redraw(); });
   themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
 
   const TOL = () => 6 / zoom; // ~6px on screen regardless of zoom
@@ -609,7 +654,7 @@ function main(): void {
       drag.to = { x, y };
       const hit = hitTest(ctx, doc, page, x, y);
       drag.target = hit?.kind === 'state' ? hit.index : null;
-      redraw();
+      scheduleRedraw();
       return;
     }
     if (drag.kind === 'state') {
@@ -689,7 +734,7 @@ function main(): void {
       t.x = doc.preferences.grid ? snap(drag.origX + dx, g) : drag.origX + dx;
       t.y = doc.preferences.grid ? snap(drag.origY + dy, g) : drag.origY + dy;
     }
-    redraw();
+    scheduleRedraw();
   });
 
   window.addEventListener('mouseup', () => {
@@ -817,6 +862,7 @@ function main(): void {
       s.color = hexToColorInt(String(res.extras.color));
       redraw();
       commit();
+      rebuildEditBar(); // this state's own fields (name, outputs, …) may have just changed
     });
   };
 
@@ -870,6 +916,7 @@ function main(): void {
       t.color = hexToColorInt(String(res.extras.color));
       redraw();
       commit();
+      rebuildEditBar(); // this transition's own fields may have just changed
     });
   };
 
@@ -881,6 +928,7 @@ function main(): void {
       txt.text = String(res.text);
       redraw();
       commit();
+      rebuildEditBar();
     });
   };
 
@@ -1130,7 +1178,11 @@ function main(): void {
       s.x0 += ux * step; s.y0 += uy * step; s.x1 += ux * step; s.y1 += uy * step;
       updateAttachedTransitions(doc, s.name);
       redraw();
-      commit();
+      // Debounce the commit so holding an arrow key (which can repeat at
+      // >100Hz) doesn't serialize+round-trip the whole document, and create
+      // an undo step, on every single pixel of movement.
+      if (nudgeCommitTimer) clearTimeout(nudgeCommitTimer);
+      nudgeCommitTimer = setTimeout(() => { nudgeCommitTimer = null; commit(); }, 300);
       return;
     }
 
@@ -1231,6 +1283,7 @@ function main(): void {
       setExpanded: (v) => vscode.postMessage({ type: 'setEditBarExpanded', value: v }),
     });
     refreshEditBar = () => editBar.refresh();
+    rebuildEditBar = () => editBar.rebuild();
     editBar.refresh();
   }
 
@@ -1384,6 +1437,7 @@ function main(): void {
   };
   const setSurface = (mode: SurfaceMode) => {
     surface = mode;
+    invalidateTheme();
     if (surfaceToggle) surfaceToggle.checked = mode === 'theme';
     redraw();
     vscode.postMessage({ type: 'setCanvasSurface', value: mode });

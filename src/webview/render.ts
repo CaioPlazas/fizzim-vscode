@@ -726,9 +726,15 @@ export function render(
     // is a fraction of a CSS pixel there, and a fraction of a pixel at low alpha
     // renders as almost nothing.
     const d = GRID_DOT_PX / opts.zoom;
+    // One path for every dot + one fill(), instead of a fillRect() per dot -
+    // a large page at a small grid size is thousands of dots, and each
+    // fillRect is its own draw call. This runs every redraw (including per
+    // mousemove during a drag), so batching it matters.
+    ctx.beginPath();
     for (let gx = 0; gx <= w; gx += g) {
-      for (let gy = 0; gy <= h; gy += g) ctx.fillRect(gx - d / 2, gy - d / 2, d, d);
+      for (let gy = 0; gy <= h; gy += g) ctx.rect(gx - d / 2, gy - d / 2, d, d);
     }
+    ctx.fill();
   }
 
   const outputInfo = buildOutputInfo(doc.outputs);
@@ -938,23 +944,42 @@ export function computeBounds(
   // Floor at the .fzm page size (Fizzim's Page Setup), else a sensible minimum.
   let maxX = floorToPage ? Math.max(400, doc.preferences.pageSizeW) : 0;
   let maxY = floorToPage ? Math.max(300, doc.preferences.pageSizeH) : 0;
+  const grow = (p: Point) => {
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  };
 
   for (const s of doc.states) {
     if (s.page !== page) continue;
-    maxX = Math.max(maxX, s.x1);
-    maxY = Math.max(maxY, s.y1);
+    grow({ x: s.x1, y: s.y1 });
   }
+  // A transition is relevant to `page` by its endpoint STATES' pages - same
+  // test render() uses to decide same-page/cross-page/off-page - not its own
+  // `page` field, which (like Java's myPage) only tracks the start state's
+  // side. Each on-page piece grows the bounds by whatever's actually drawn
+  // there: the full curve, a same-page stub's tip, or a cross-page connector's
+  // on-page handles - so a dragged stub tip or connector handle is never
+  // pushed somewhere the canvas can't scroll to.
+  const statePage = new Map(doc.states.map((s) => [s.name, s.page]));
   for (const t of doc.transitions) {
-    if (t.page !== page) continue;
-    for (const p of [t.startPt, t.endPt, t.startCtrlPt, t.endCtrlPt]) {
-      maxX = Math.max(maxX, p.x);
-      maxY = Math.max(maxY, p.y);
+    if (t.kind === 'loopback') {
+      if (statePage.get(t.state) !== page) continue;
+      [t.startPt, t.endPt, t.startCtrlPt, t.endCtrlPt].forEach(grow);
+      continue;
+    }
+    const sp = statePage.get(t.startState);
+    const ep = statePage.get(t.endState);
+    if (sp === page && ep === page) {
+      (t.stub ? [t.startPt, t.pageS] : [t.startPt, t.endPt, t.startCtrlPt, t.endCtrlPt]).forEach(grow);
+    } else if (sp === page) {
+      [t.startPt, t.startCtrlPt, t.pageSC, t.pageS].forEach(grow);
+    } else if (ep === page) {
+      [t.endPt, t.endCtrlPt, t.pageEC, t.pageE].forEach(grow);
     }
   }
   for (const txt of doc.texts) {
     if (txt.page !== page) continue;
-    maxX = Math.max(maxX, txt.x + 100);
-    maxY = Math.max(maxY, txt.y);
+    grow({ x: txt.x + 100, y: txt.y });
   }
   return { width: maxX + 50, height: maxY + 50 };
 }

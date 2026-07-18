@@ -113,7 +113,7 @@ function sep(): HTMLElement {
 
 // --- the bar ----------------------------------------------------------------
 
-export function buildEditBar(container: HTMLElement, host: EditBarHost): { refresh(): void } {
+export function buildEditBar(container: HTMLElement, host: EditBarHost): { refresh(): void; rebuild(): void } {
   let lastKey = ' ';
   // Pinned vertical expansion. Seeded from the persisted view pref and written
   // back on toggle, so the pin survives selection changes AND reloads.
@@ -364,6 +364,16 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
       const key = keyOf();
       if (key === lastKey) return;
       lastKey = key;
+      build();
+    },
+    // Forces a rebuild even though the selection identity hasn't changed - for
+    // when a modal dialog (the full attribute table, double-click, "All
+    // attributes…") just edited the very object the bar is showing. The
+    // identity-only check in refresh() exists so the bar's own live inputs
+    // never get clobbered mid-keystroke; a modal dialog can't be open at the
+    // same time as that, so forcing here is safe and the values would
+    // otherwise sit stale until the user clicks away and back.
+    rebuild() {
       build();
     },
   };

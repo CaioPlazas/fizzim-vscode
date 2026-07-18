@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { attrIsVisible, attrLabelText, buildGlobalTableRows, buildOutputInfo, computeBounds, curveAnchor, hitAttrLabel, render, stateAnchor, transitionOnPage, visibleAttrLabels } from './render';
-import { createState, createTransition } from './edit';
+import { createState, createTransition, moveStateToPage, setTransitionStub } from './edit';
 import { addInput, addOutput } from './globals';
 import { makeTheme } from './theme';
 import { DEFAULT_PREFERENCES, FzmDocument, ObjAttribute } from '../fzm/model';
@@ -32,6 +32,12 @@ function fakeCtx(bufferW: number, bufferH: number) {
   const lines: number[][] = [];
   const texts: { text: string; font: string; style: unknown; at: number[]; seq: number }[] = [];
   let seq = 0;
+  // The grid batches its dots into one beginPath()/rect()-per-dot/fill() (see
+  // render.ts) instead of a fillRect() per dot; track pending rect() calls and
+  // flush them into `fills` on fill(), so the grid tests below can keep
+  // asserting against `fills` exactly as if each dot were still its own
+  // fillRect call.
+  let pendingRects: number[][] = [];
   const ctx = {
     canvas: { width: bufferW, height: bufferH },
     font: '',
@@ -50,8 +56,14 @@ function fakeCtx(bufferW: number, bufferH: number) {
     // Font-aware on purpose: bold is wider, which is what lets the tests below
     // catch a label being measured with a different font than it's drawn with.
     measureText: (t: string) => ({ width: t.length * (ctx.font.startsWith('600') ? 7 : 6) }),
-    save: () => {}, restore: () => {}, beginPath: () => {}, closePath: () => {},
-    stroke: () => {}, fill: () => {}, strokeRect: () => {}, roundRect: () => {},
+    save: () => {}, restore: () => {}, beginPath: () => { pendingRects = []; }, closePath: () => {},
+    rect: (...r: number[]) => void pendingRects.push(r),
+    stroke: () => {},
+    fill: () => {
+      for (const r of pendingRects) fills.push({ style: ctx.fillStyle, rect: r, seq: seq++ });
+      pendingRects = [];
+    },
+    strokeRect: () => {}, roundRect: () => {},
     ellipse: () => {}, bezierCurveTo: () => {}, setLineDash: () => {},
   };
   return { ctx: ctx as unknown as CanvasRenderingContext2D, transforms, fills, lines, texts };
@@ -270,6 +282,31 @@ test('computeBounds includes transition control points', () => {
   const bounds = computeBounds(doc, 1);
   assert.ok(bounds.width >= 9000);
   assert.ok(bounds.height >= 8000);
+});
+
+test('computeBounds includes a same-page stub tip (regression: a dragged stub tip used to be excluded)', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 100, 100, 1);
+  const b = createState(doc, 400, 100, 1);
+  const t = createTransition(doc, a, b, 1);
+  setTransitionStub(doc, t, true);
+  if (t.kind === 'transition') t.pageS = { x: 9000, y: 8000 }; // drag the tip far out
+  const bounds = computeBounds(doc, 1);
+  assert.ok(bounds.width >= 9000, `width ${bounds.width} should include the dragged stub tip`);
+  assert.ok(bounds.height >= 8000, `height ${bounds.height} should include the dragged stub tip`);
+});
+
+test("computeBounds includes a cross-page connector's on-page handles (regression: excluded, so a dragged handle could land off-canvas)", () => {
+  const doc = emptyDoc();
+  doc.tabs.push('Page 2');
+  const a = createState(doc, 100, 100, 1);
+  const b = createState(doc, 400, 100, 1);
+  const t = createTransition(doc, a, b, 1);
+  moveStateToPage(doc, doc.states.indexOf(b), 2); // now cross-page
+  if (t.kind === 'transition') t.pageS = { x: 9000, y: 8000 }; // drag the source handle far out
+  const boundsPage1 = computeBounds(doc, 1);
+  assert.ok(boundsPage1.width >= 9000, `page 1 width ${boundsPage1.width} should include the dragged source handle`);
+  assert.ok(boundsPage1.height >= 8000, `page 1 height ${boundsPage1.height} should include the dragged source handle`);
 });
 
 test('buildGlobalTableRows lists non-empty sections with headers, "reg" shown as statebit', () => {

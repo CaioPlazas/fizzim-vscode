@@ -433,6 +433,72 @@ test('deletePage removes loopbacks on the deleted page', () => {
   assert.equal(remaining.state, 'state0');
 });
 
+test('createTransition seeds cross-page connector geometry when the two states already live on different pages (regression: used to draw into the canvas origin)', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  moveStateToPage(doc, 1, 2); // b now lives on page 2, before any transition connects them
+  const t = createTransition(doc, a, b, 1);
+
+  // The old bug: startPt/endPt/control points stayed at their zero-initialized
+  // (0,0), since only recomputeTransition (the same-page branch) ever ran.
+  // A cross-page connector docks pageS/pageE to the page edges instead.
+  assert.equal(t.pageS.x, doc.preferences.pageSizeW - 50, 'source connector docks to the page edge');
+  assert.equal(t.pageE.x, 50, 'dest connector docks to the page edge');
+  assert.notDeepEqual(t.startPt, { x: 0, y: 0 }, 'startPt should be seeded on the border, not left at the origin');
+});
+
+test('createTransition gives every point its own object (regression: all 8 points used to alias the same {0,0})', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+  t.startPt.x = 999;
+  assert.notEqual(t.endPt.x, 999, 'mutating one point must not affect another');
+  assert.notEqual(t.startCtrlPt.x, 999);
+  assert.notEqual(t.pageS.x, 999);
+});
+
+test('reconnectTransition seeds cross-page geometry and re-pages the transition when the new endpoint is on another page', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const c = createState(doc, 0, 0, 1);
+  moveStateToPage(doc, 2, 2); // c now lives on page 2
+  const t = createTransition(doc, a, b, 1); // same-page a -> b
+
+  const r = reconnectTransition(doc, doc.transitions.indexOf(t), 'state0', 'state2');
+  assert.equal(r.ok, true);
+  assert.equal(t.page, 1, "a transition's own page tracks its start state's page");
+  assert.equal(t.pageS.x, doc.preferences.pageSizeW - 50, 'reconnecting across pages docks the connector');
+});
+
+test("moveStateToPage keeps a normal transition's page tracking its start state's page", () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+  assert.equal(t.page, 1);
+
+  moveStateToPage(doc, 0, 2); // move the START state -> the transition's own page follows
+  assert.equal(t.page, 2, "transition.page should track its (possibly moved) start state");
+});
+
+test('moveStateToPage moves every attribute label onto the start page when a transition first becomes cross-page', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+  assert.equal(t.attributes.every((attr) => attr.page === 1), true, 'starts out all on the shared page');
+
+  moveStateToPage(doc, 1, 2); // b -> page 2: t is now cross-page for the first time
+  assert.equal(t.attributes.every((attr) => attr.page === 1), true, 'labels pile onto the (new) start page, like Java');
+});
+
 test('moveStateToPage re-seeds a transition that just became cross-page, and restores it when moved back', () => {
   const doc = emptyDoc();
   doc.tabs = ['Page 1', 'Page 2'];

@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.0.2 — bug fixes and performance (pre-release)
+
+v2 had forked before a round of v1 bug fixes landed and had picked up a couple
+of its own; this backports everything found in an audit pass and adds some
+canvas rendering performance work. Still `.fzm`- and HDL-compatible with v1
+(serializer unchanged; golden 93/93 byte-identical).
+
+- **Fixed: resizing or moving a state with a loopback attached made the
+  loopback grow.** Each move/resize event was re-deriving the loopback's
+  control points from the previous, already-rounded points, and the rounding
+  bias compounded over a drag into a visibly inflating arm. The loopback now
+  translates rigidly with its anchor point instead.
+- **Fixed: connecting a transition to a state on another page (via drag-to-connect
+  or the edit bar's From/To fields) could draw a broken connector into the
+  corner of the canvas**, instead of the pentagon "road sign" docked at the
+  page edge.
+- **Fixed: a transition's page tracking could go stale** after a move or
+  reconnect, throwing off the status bar's counts, the canvas's scrollable
+  area, and label visibility.
+- **Fixed: a dragged stub tip or cross-page connector handle could end up
+  somewhere the canvas couldn't scroll to.**
+- **Fixed: the edit bar could show stale values** after editing the same
+  object through the full attribute dialog (double-click / "All
+  attributes…") — it now refreshes correctly.
+- The Global Attributes dialog now cancels on Escape, like every other dialog.
+- Arrow-key nudging and mouse-drag redraws are now debounced/batched, and the
+  canvas theme is cached instead of recomputed on every redraw — snappier
+  dragging, especially on larger diagrams.
+
 ## 2.0.1 — canvas interaction (pre-release)
 
 Adds modern canvas interaction on top of 2.0.0. Still `.fzm`- and
