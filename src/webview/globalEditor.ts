@@ -128,7 +128,12 @@ export function showGlobalEditor(doc: FzmDocument, initialTab = MACHINE): Promis
       input.value = value;
       input.readOnly = readOnly;
       Object.assign(input.style, {
-        width: '100%', boxSizing: 'border-box', padding: '2px 4px',
+        // width:100% alone lets the browser's table auto-layout shrink a
+        // column - and this input with it - below what its own content needs
+        // whenever the table is wider than the (fixed-width) dialog box; a
+        // min-width floor stops that, and the box's own overflow:auto (below)
+        // scrolls instead of clipping if the table ends up wider than the box.
+        width: '100%', minWidth: '10ch', boxSizing: 'border-box', padding: '2px 4px',
         background: readOnly ? 'transparent' : 'var(--vscode-input-background, #3c3c3c)',
         color: 'var(--vscode-input-foreground, #ccc)',
         border: readOnly ? 'none' : '1px solid var(--vscode-input-border, #3c3c3c)',
@@ -174,7 +179,7 @@ export function showGlobalEditor(doc: FzmDocument, initialTab = MACHINE): Promis
     const cellSelect = (value: string, options: { value: string; label: string }[], onChange: (v: string) => void): HTMLSelectElement => {
       const sel = document.createElement('select');
       Object.assign(sel.style, {
-        width: '100%', padding: '2px', background: 'var(--vscode-input-background, #3c3c3c)',
+        width: '100%', minWidth: '10ch', padding: '2px', background: 'var(--vscode-input-background, #3c3c3c)',
         color: 'var(--vscode-input-foreground, #ccc)', border: '1px solid var(--vscode-input-border, #3c3c3c)',
       } as CSSStyleDeclaration);
       for (const opt of options) {

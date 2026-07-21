@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.1
+
+Bug fix plus a usability pass on dialog/edit-bar field sizing. No change to the
+`.fzm` format or the generated Verilog/VHDL (verified byte-identical against
+the reference corpus).
+
+- **Fixed: a diagram created by hand (a blank file named `*.fzm`, not via
+  File > New) would silently lose every state/transition attribute — including
+  state names — the first time Global Attributes was used (e.g. to add an
+  output).** A hand-created blank file has none of the machine/state/
+  transition attribute headers the real Fizzim tool always writes; opening one
+  now seeds the same header File > New does.
+- Text fields in the attribute table dialog, other property dialogs, and the
+  Global Attributes table now grow to fit their content instead of clipping
+  ordinary state names and values inside a fixed-width box.
+
 ## 1.5.0
 
 Cross-page transition bug fixes plus interaction polish. No change to the

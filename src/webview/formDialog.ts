@@ -36,11 +36,31 @@ function makeBox(): HTMLDivElement {
   box.style.color = 'var(--vscode-editorWidget-foreground, #ccc)';
   box.style.border = '1px solid var(--vscode-editorWidget-border, #454545)';
   box.style.padding = '16px';
-  box.style.minWidth = '300px';
+  box.style.minWidth = '340px';
+  // A safety cap, not the normal case: text fields below size to their own
+  // content (see sizeToContent), so the box's shrink-to-fit width already
+  // grows with them. This only kicks in for a genuinely huge value, trading a
+  // scrollbar for never cutting text off outright.
+  box.style.maxWidth = '90vw';
+  box.style.maxHeight = '88vh';
+  box.style.overflow = 'auto';
   box.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
   box.style.fontSize = '13px';
   box.style.boxShadow = '0 2px 12px rgba(0,0,0,0.4)';
   return box;
+}
+
+// Sizes a text field to its content instead of stretching to 100% of the
+// dialog box (which, for a single-field dialog, meant the box collapsed to
+// its minWidth and the field was only ever as wide as that floor - the
+// original cause of clipped state/page names in "rename" style dialogs).
+// Grows on every keystroke; caps at maxCh so the box's maxWidth/overflow
+// safety net (above) is what handles a truly huge value, not an ever-growing
+// input.
+function sizeToContent(inp: HTMLInputElement, minCh: number, maxCh: number): void {
+  const size = () => { inp.style.width = `${Math.min(maxCh, Math.max(minCh, inp.value.length + 1))}ch`; };
+  size();
+  inp.addEventListener('input', size);
 }
 
 export function showForm(title: string, fields: Field[]): Promise<FormResult | null> {
@@ -82,7 +102,11 @@ export function showForm(title: string, fields: Field[]): Promise<FormResult | n
 
         if (field.kind === 'select') {
           const select = document.createElement('select');
-          select.style.width = '100%';
+          // No fixed width: a <select> already sizes to its longest option, so
+          // constraining it to the (possibly still-collapsed) box width was the
+          // one thing here that could clip an option's text rather than the
+          // other way around.
+          select.style.minWidth = '22ch';
           select.style.padding = '4px';
           select.style.background = 'var(--vscode-input-background, #3c3c3c)';
           select.style.color = 'var(--vscode-input-foreground, #ccc)';
@@ -137,13 +161,12 @@ export function showForm(title: string, fields: Field[]): Promise<FormResult | n
           const input = document.createElement('input');
           input.type = 'text';
           input.value = field.value;
-          input.style.width = '100%';
-          input.style.boxSizing = 'border-box';
           input.style.padding = '4px 6px';
           input.style.background = 'var(--vscode-input-background, #3c3c3c)';
           input.style.color = 'var(--vscode-input-foreground, #ccc)';
           input.style.border = '1px solid var(--vscode-input-border, #3c3c3c)';
           input.style.outline = 'none';
+          sizeToContent(input, 22, 64);
           row.appendChild(input);
           inputs.set(field.key, input);
           if (!firstInput) firstInput = input;

@@ -61,3 +61,19 @@ test('reset state is derived correctly from the reset_state machine attribute', 
   assert.equal(doc.states.find((s) => s.name === 'IDLE')?.reset, true);
   assert.equal(doc.states.find((s) => s.name === 'READ')?.reset, false);
 });
+
+// A real .fzm always has at least one page tab - the Java GUI can never write
+// one without it, and defaultDocument() always seeds 'Page 1'. A hand-created
+// blank file (e.g. New File in the VS Code explorer, named *.fzm) has no
+// <tabs> block at all, so parseFzm reports zero tabs. main.ts's parseOrDefault
+// treats that as the signal to seed defaultDocument() instead - without the
+// machine/state/trans attribute headers a real Fizzim file always has,
+// reconcileGlobals (globals.ts) deletes every state/transition's own
+// attributes the first time Global Attributes is used. This test locks in the
+// zero-tabs signal that fix depends on.
+test('parsing empty text yields zero tabs (the "not a real Fizzim file" signal)', () => {
+  const doc = parseFzm('');
+  assert.equal(doc.tabs.length, 0);
+  assert.equal(doc.machine.length, 0);
+  assert.equal(doc.stateAttrs.length, 0);
+});
