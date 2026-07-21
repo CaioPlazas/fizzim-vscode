@@ -243,6 +243,32 @@ test('reconcile: reset ring follows the machine reset_state value', () => {
   assert.equal(doc.states.find((s) => s.name === 'B')?.reset, true);
 });
 
+// Root-cause regression for "everything disappears after adding an output":
+// a hand-created blank .fzm (docWithStates's shape - no machine/state/trans
+// attribute headers, exactly what parseFzm('') produces) has shorter global
+// lists than each state/transition's own attributes. reconcileGlobals's "drop
+// attributes the global list no longer has" pass then deletes them, including
+// the state's own name. main.ts's parseOrDefault avoids ever reconciling a doc
+// shaped like this by seeding defaultDocument()'s header at load time instead
+// - this test documents why that seeding is required, and that seeding it
+// (reconcileDoc's shape) is what keeps the attribute.
+test('reconcile on a header-less doc wipes a state\'s own name attribute (the bug)', () => {
+  const doc = docWithStates(['A']);
+  assert.equal(doc.stateAttrs.length, 0); // no header - what parseFzm('') produces
+  assert.ok(hasAttr(doc.states[0].attributes, 'name'));
+  reconcileGlobals(doc);
+  assert.ok(!hasAttr(doc.states[0].attributes, 'name'), 'name attribute was wiped by reconcile');
+});
+
+test('reconcile on a properly-headered doc preserves the name attribute (the fix)', () => {
+  const doc = reconcileDoc(['A']);
+  assert.ok(doc.stateAttrs.length > 0); // defaultDocument()'s seeded header
+  assert.ok(hasAttr(doc.states[0].attributes, 'name'));
+  reconcileGlobals(doc);
+  assert.ok(hasAttr(doc.states[0].attributes, 'name'));
+  assert.equal(doc.states[0].attributes.find((a) => a.name === 'name')?.value, 'A');
+});
+
 // --- Outputs-tab validations (MyTableModel.setValueAt rules) --------------
 
 test('validateOutputEdit: reset value only allowed on regdp/flag', () => {

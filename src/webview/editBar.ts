@@ -65,12 +65,20 @@ function field(label: string, control: HTMLElement): HTMLElement {
   return f;
 }
 
-function textInput(value: string, width: string): HTMLInputElement {
+// Sizes to content instead of a fixed width, so a field never clips a value
+// you can already see in full elsewhere (a long state name, a multi-term
+// equation): it starts at minCh, grows on every keystroke, and caps at maxCh
+// so one pathologically long value can't swallow the whole bar - past that
+// cap the input still holds and edits the full value, just scrolled internally
+// (the input's `.value` is never truncated, only its on-screen width is).
+function textInput(value: string, minCh: number, maxCh = Math.max(minCh, 40)): HTMLInputElement {
   const i = document.createElement('input');
   i.type = 'text';
   i.className = 'eb-input';
   i.value = value;
-  i.style.width = width;
+  const size = () => { i.style.width = `${Math.min(maxCh, Math.max(minCh, i.value.length + 1))}ch`; };
+  size();
+  i.addEventListener('input', size);
   return i;
 }
 
@@ -149,7 +157,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
     tag.textContent = 'State';
     parts.push(tag);
 
-    const name = textInput(getAttrValue(s.attributes, 'name'), '10ch');
+    const name = textInput(getAttrValue(s.attributes, 'name'), 14);
     name.addEventListener('change', () => {
       const r = renameState(doc, sel.index, name.value.trim());
       if (!r.ok) { host.message(r.error!); name.value = getAttrValue(s.attributes, 'name'); return; }
@@ -169,7 +177,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
       parts.push(sep());
       for (const o of outs) {
         const def = doc.outputs.find((x) => x.name === o.name)?.value ?? '';
-        const inp = textInput(o.value, '5ch');
+        const inp = textInput(o.value, 5, 20);
         inp.placeholder = def || '0';
         live(inp, (v) => setStateOutputValue(s, o.name, v));
         parts.push(field(o.name, inp));
@@ -190,11 +198,11 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
     tag.textContent = isLoop ? 'Loopback' : 'Transition';
     parts.push(tag);
 
-    const eq = textInput(getAttrValue(t.attributes, 'equation'), '12ch');
+    const eq = textInput(getAttrValue(t.attributes, 'equation'), 16, 80);
     live(eq, (v) => setEquation(t, v));
     parts.push(field('Equation', eq));
 
-    const prio = textInput(getPriority(t), '4ch');
+    const prio = textInput(getPriority(t), 4, 10);
     live(prio, (v) => setPriority(t, v));
     parts.push(field('Priority', prio));
 
@@ -232,7 +240,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
     if (doc.outputs.length) {
       parts.push(sep());
       for (const o of doc.outputs) {
-        const inp = textInput(getTransitionOutputValue(t, o.name), '5ch');
+        const inp = textInput(getTransitionOutputValue(t, o.name), 5, 20);
         inp.placeholder = '–';
         live(inp, (v) => setTransitionOutputValue(t, o.name, v));
         parts.push(field(o.name, inp));
@@ -248,7 +256,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
     const tag = document.createElement('span');
     tag.className = 'eb-kind';
     tag.textContent = 'Text';
-    const inp = textInput(txt.text ?? '', '24ch');
+    const inp = textInput(txt.text ?? '', 24, 100);
     live(inp, (v) => { txt.text = v; });
     return [tag, field('Content', inp)];
   };

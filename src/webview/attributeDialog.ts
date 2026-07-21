@@ -30,6 +30,18 @@ function styleButton(btn: HTMLButtonElement, primary: boolean): void {
 
 const INPUT_CSS = 'background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,#3c3c3c);';
 
+// Sizes a table-cell input to its content instead of a fixed pixel width, so a
+// long state/attribute name isn't clipped inside its own cell: it starts at
+// minCh (already larger than the old fixed widths), grows on every keystroke,
+// and caps at maxCh so one huge value can't blow out the table - the dialog's
+// box already scrolls (max-width:90vw; overflow:auto), so a value past the cap
+// is still fully editable, just scrolled within its cell rather than resized.
+function sizeToContent(inp: HTMLInputElement, minCh: number, maxCh: number): void {
+  const size = () => { inp.style.width = `${Math.min(maxCh, Math.max(minCh, inp.value.length + 1))}ch`; };
+  size();
+  inp.addEventListener('input', size);
+}
+
 // Appends a small "Black" button next to a color picker that resets it to
 // Fizzim's default (#000000). Mirrors the one showForm adds (STEP 11) so the
 // state/transition dialogs get the same reset affordance.
@@ -141,7 +153,8 @@ export function showAttributeDialog(
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = a.name;
-        inp.style.cssText = 'width:110px;padding:2px 4px;outline:none;' + INPUT_CSS;
+        inp.style.cssText = 'padding:2px 4px;outline:none;' + INPUT_CSS;
+        sizeToContent(inp, 16, 40);
         nameTd.appendChild(inp);
         ctl.name = inp;
       } else {
@@ -156,7 +169,8 @@ export function showAttributeDialog(
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = a.value;
-        inp.style.cssText = 'width:120px;padding:2px 4px;outline:none;' + INPUT_CSS;
+        inp.style.cssText = 'padding:2px 4px;outline:none;' + INPUT_CSS;
+        sizeToContent(inp, 18, 60);
         valueTd.appendChild(inp);
         ctl.value = inp;
       } else {
@@ -187,7 +201,8 @@ export function showAttributeDialog(
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = typeToDisplay(a.type);
-        inp.style.cssText = 'width:80px;padding:2px 4px;outline:none;' + INPUT_CSS;
+        inp.style.cssText = 'padding:2px 4px;outline:none;' + INPUT_CSS;
+        sizeToContent(inp, 10, 24);
         typeTd.appendChild(inp);
         ctl.type = inp;
       } else {
@@ -200,7 +215,8 @@ export function showAttributeDialog(
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = a.comment;
-        inp.style.cssText = 'width:110px;padding:2px 4px;outline:none;' + INPUT_CSS;
+        inp.style.cssText = 'padding:2px 4px;outline:none;' + INPUT_CSS;
+        sizeToContent(inp, 16, 50);
         commentTd.appendChild(inp);
         ctl.comment = inp;
       } else {
@@ -229,7 +245,8 @@ export function showAttributeDialog(
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = a.useratts;
-        inp.style.cssText = 'width:90px;padding:2px 4px;outline:none;' + INPUT_CSS;
+        inp.style.cssText = 'padding:2px 4px;outline:none;' + INPUT_CSS;
+        sizeToContent(inp, 12, 40);
         userTd.appendChild(inp);
         ctl.useratts = inp;
       } else {
@@ -242,7 +259,8 @@ export function showAttributeDialog(
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.value = a.resetval;
-        inp.style.cssText = 'width:80px;padding:2px 4px;outline:none;' + INPUT_CSS;
+        inp.style.cssText = 'padding:2px 4px;outline:none;' + INPUT_CSS;
+        sizeToContent(inp, 10, 30);
         resetTd.appendChild(inp);
         ctl.resetval = inp;
       } else {
@@ -340,7 +358,8 @@ export function showAttributeDialog(
             const inp = document.createElement('input');
             inp.type = 'text';
             inp.value = field.value;
-            inp.style.cssText = 'width:80px;padding:3px 5px;outline:none;' + INPUT_CSS;
+            inp.style.cssText = 'padding:3px 5px;outline:none;' + INPUT_CSS;
+            sizeToContent(inp, 10, 30);
             group.appendChild(inp);
             extraInputs.set(field.key, inp);
           }

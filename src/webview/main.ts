@@ -1,3 +1,4 @@
+import { defaultDocument } from '../fzm/model';
 import type { FzmDocument } from '../fzm/model';
 import { parseFzm } from '../fzm/parser';
 import { serializeFzm } from '../fzm/serializer';
@@ -176,6 +177,21 @@ const FONT_CHOICES = [
 const fontOptions = (current: string): string[] =>
   current && !FONT_CHOICES.includes(current) ? [current, ...FONT_CHOICES] : FONT_CHOICES;
 
+// A real .fzm always has at least one page tab - the Java GUI can't produce a
+// file without one, and defaultDocument() always seeds 'Page 1'. A hand-created
+// blank file (e.g. New File in the VS Code explorer, named *.fzm) parses to
+// empty machine/state/trans attribute lists too, since there's no header to
+// read - and reconcileGlobals (globals.ts) treats every state/transition's own
+// attributes as stale extras once the global lists are shorter than them,
+// deleting them the first time Global Attributes is used (e.g. to add an
+// output). Detect that "no tabs" signature and seed the same header
+// defaultDocument() gives New Diagram, instead of trusting a parse that can
+// never correspond to a real Fizzim file.
+function parseOrDefault(text: string): FzmDocument {
+  const parsed = parseFzm(text);
+  return parsed.tabs.length === 0 ? defaultDocument() : parsed;
+}
+
 function main(): void {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement | null;
   const initialText = window.__FZM_TEXT__;
@@ -185,7 +201,7 @@ function main(): void {
 
   const vscode = acquireVsCodeApi();
   let page = 1;
-  let doc = parseFzm(initialText);
+  let doc = parseOrDefault(initialText);
   let selection: Selection | null = null;
   let hover: Selection | null = null; // what the cursor is over (view-only)
   let group: Selection[] = []; // multi-selection (states + text)
@@ -1476,8 +1492,11 @@ function main(): void {
     export: (arg) => exportImage(arg === 'image/jpeg' ? 'image/jpeg' : 'image/png'),
   };
 
-  // --- Toolbar. The three document actions sit next to the canvas rather than
-  // in the editor title bar; they're the same functions the commands call.
+  // --- Toolbar. The document actions sit next to the canvas rather than in the
+  // editor title bar; they're the same functions the commands call.
+  document.getElementById('new-btn')?.addEventListener('click', () =>
+    vscode.postMessage({ type: 'command', command: 'fizzim.newDiagram' })
+  );
   document.getElementById('generate-btn')?.addEventListener('click', () =>
     // Language choice is the host's QuickPick, so the toolbar and the Command
     // Palette ask the same question rather than each having their own answer.
@@ -1548,7 +1567,7 @@ function main(): void {
       return;
     }
     if (msg && msg.type === 'externalUpdate' && typeof msg.text === 'string') {
-      doc = parseFzm(msg.text);
+      doc = parseOrDefault(msg.text);
       if (page > doc.tabs.length) page = 1;
       selection = null;
       hover = null; // a whole new doc: every index is meaningless now

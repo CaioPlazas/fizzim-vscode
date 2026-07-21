@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.3 — bug fix, New button, wider fields (pre-release)
+
+No change to the `.fzm` format or the generated Verilog/VHDL (serializer
+unchanged; golden 93/93 byte-identical).
+
+- **Fixed: a diagram created by hand (a blank file named `*.fzm`, not via
+  File > New / the toolbar's New button) would silently lose every state/
+  transition attribute — including state names — the first time Global
+  Attributes was used (e.g. to add an output).** A hand-created blank file
+  has none of the machine/state/transition attribute headers the real Fizzim
+  tool always writes; opening one now seeds the same header New Diagram does.
+- Added a **New** button to the toolbar — `fizzim.newDiagram` existed only
+  as a Command Palette entry before, with no visible affordance.
+- The edit bar, the attribute table dialog, other property dialogs, and the
+  Global Attributes table now size their text fields to content instead of
+  a fixed width — ordinary state names and equations no longer get clipped.
+
 ## 2.0.2 — bug fixes and performance (pre-release)
 
 v2 had forked before a round of v1 bug fixes landed and had picked up a couple
