@@ -1,13 +1,15 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmTransition, Point } from '../fzm/model';
 
 // Ports the geometry from StateObj.getBorderPts() and
-// StateTransitionObj/LoopbackTransitionObj's setEndPts()/updateObj(). Scope
-// note: StateTransitionObj also has a moveEndPts() "fast path" that preserves
-// curve shape during small drags for visual smoothness (see recalcCheck() in
-// the Java source) - we deliberately skip porting that and always do the full
-// recompute below. It's a cosmetic optimization from the original Swing app's
-// redraw performance, not something that affects the final result once a drag
-// ends, and always-recompute is simpler to keep correct.
+// StateTransitionObj/LoopbackTransitionObj's setEndPts()/updateObj().
+// StateTransitionObj also has a moveEndPts() "fast path" (recalcCheck() in
+// the Java source): on an ordinary state move/resize it keeps the
+// transition's stored border index and translates its control points by
+// their prior offset, only falling back to a full recompute when the two
+// states' relative quadrant actually flips. That fast path is ported below
+// as moveTransition() - it is NOT cosmetic: skipping it means any move of a
+// connected state discards the user's hand-placed curve, which is a real
+// bug, not just a redraw optimization.
 
 export function getBorderPts(s: FzmState): Point[] {
   const pts: Point[] = [];
@@ -118,6 +120,47 @@ export function recomputeTransition(t: FzmTransition, startState: FzmState, endS
   };
 }
 
+// Ports StateTransitionObj.moveEndPts()'s fast path: called when a connected
+// state moves or resizes but the transition itself wasn't touched. Keeps the
+// transition's existing (frozen) startStateIndex/endStateIndex and translates
+// its control points by the exact delta their anchor points just moved -
+// preserving any hand-dragged curve shape exactly, the same technique
+// recomputeLoopback already uses below. Falls back to the full
+// recomputeTransition() (Java's setEndPts()) only when the states' relative
+// quadrant has flipped by more than a 20px tolerance, mirroring Java's
+// recalcCheck().
+export function moveTransition(t: FzmTransition, startState: FzmState, endState: FzmState): void {
+  const startBorderPts = getBorderPts(startState);
+  const endBorderPts = getBorderPts(endState);
+  const newStartPt = startBorderPts[t.startStateIndex];
+  const newEndPt = endBorderPts[t.endStateIndex];
+
+  const dx1 = t.startPt.x - t.endPt.x;
+  const dy1 = t.startPt.y - t.endPt.y;
+  const dx2 = newStartPt.x - newEndPt.x;
+  const dy2 = newStartPt.y - newEndPt.y;
+  const flipped = !(
+    ((dx1 >= 0 && dx2 >= -20) || (dx1 < 0 && dx2 < 20)) &&
+    ((dy1 >= 0 && dy2 >= -20) || (dy1 < 0 && dy2 < 20))
+  );
+
+  if (flipped) {
+    recomputeTransition(t, startState, endState);
+    return;
+  }
+
+  t.startCtrlPt = {
+    x: t.startCtrlPt.x + (newStartPt.x - t.startPt.x),
+    y: t.startCtrlPt.y + (newStartPt.y - t.startPt.y),
+  };
+  t.endCtrlPt = {
+    x: t.endCtrlPt.x + (newEndPt.x - t.endPt.x),
+    y: t.endCtrlPt.y + (newEndPt.y - t.endPt.y),
+  };
+  t.startPt = newStartPt;
+  t.endPt = newEndPt;
+}
+
 // Ports LoopbackTransitionObj.setEndPts(x,y), used when a brand-new loopback
 // is created by right-clicking a state. Note this uses the same raw,
 // non-Y-flipped angle convention as getBorderPts() itself (angle = index *
@@ -167,7 +210,7 @@ export function createStubGeometry(state: FzmState): { startStateIndex: number; 
 export function recomputeStub(t: FzmTransition, startState: FzmState): void {
   const borderPts = getBorderPts(startState);
   const angle = getAngle(t.pageS, t.startPt);
-  const len = Math.round(Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y)) || 60;
+  const len = Math.round(Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y));
   t.startPt = borderPts[t.startStateIndex] ?? borderPts[0];
   t.pageS = { x: Math.trunc(t.startPt.x + len * Math.cos(angle)), y: Math.trunc(t.startPt.y - len * Math.sin(angle)) };
 }

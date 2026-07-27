@@ -1,6 +1,6 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmText, FzmTransition, ObjAttribute } from '../fzm/model';
 import { Selection } from './hitTest';
-import { createLoopbackGeometry, createStubGeometry, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
+import { createLoopbackGeometry, createStubGeometry, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
 
 const DEFAULT_STATE_W = 130; // matches DrawArea's default StateW/StateH
 const DEFAULT_STATE_H = 130;
@@ -549,7 +549,7 @@ export function resizeState(doc: FzmDocument, index: number, width: number, heig
       const b = byName.get(t.endState);
       if (a && b) {
         if (a.page !== b.page) recomputeCrossPage(doc, t);
-        else recomputeTransition(t, a, b);
+        else moveTransition(t, a, b);
       }
     }
   }
