@@ -28,8 +28,9 @@ import {
   setTransitionOutputValue,
   getTransitionOutputValue,
   stateOutputAttributes,
+  setTransitionStub,
 } from './edit';
-import { addOutput } from './globals';
+import { addOutput, addPriority } from './globals';
 import { getBorderPts } from './geometry';
 import { DEFAULT_PREFERENCES, FzmDocument, FzmLoopback, ObjAttribute } from '../fzm/model';
 
@@ -240,16 +241,16 @@ test('stateOutputAttributes lists a state\'s declared outputs', () => {
   assert.equal(outs[0].type, 'output');
 });
 
-test('setStateOutputValue sets the value and marks it LOCAL, blank reverts to GLOBAL_VAR', () => {
+test('setStateOutputValue sets the value and marks it LOCAL, blank reverts to the output default (F3)', () => {
   const doc = emptyDoc();
   const s = createState(doc, 0, 0, 1);
-  const out = addOutput(doc, 'reg');
-  setStateOutputValue(s, out.name, '1');
+  const out = addOutput(doc, 'reg'); // default "0"
+  setStateOutputValue(s, out.name, '1', doc.stateAttrs);
   const attr = stateOutputAttributes(s)[0];
   assert.equal(attr.value, '1');
   assert.equal(attr.valueStatus, 'LOCAL');
-  setStateOutputValue(s, out.name, '');
-  assert.equal(attr.value, '');
+  setStateOutputValue(s, out.name, '', doc.stateAttrs);
+  assert.equal(attr.value, '0', 'blank must restore the output default, not go empty (an empty comb output errors in fizzim.pl)');
   assert.equal(attr.valueStatus, 'GLOBAL_VAR');
 });
 
@@ -299,18 +300,15 @@ test('hexToColorInt/colorIntToHex round-trip a color', () => {
   assert.equal(colorIntToHex(-16777216), '#000000'); // default black
 });
 
-test('getPriority/setPriority: set, get, and clear removes the attribute', () => {
+test('getPriority/setPriority: set, get, and clear reverts to the declared global default (F4)', () => {
   const doc = emptyDoc();
   const a = createState(doc, 0, 0, 1);
   const b = createState(doc, 300, 0, 1);
   const t = createTransition(doc, a, b, 1);
-
-  // Initially no priority
-  assert.equal(getPriority(t), '');
-  assert.equal(t.attributes.some((x) => x.name === 'priority'), false);
+  addPriority(doc); // declares "priority" globally, default "1000"
 
   // Set priority
-  setPriority(t, '5');
+  setPriority(t, '5', doc.transAttrs);
   assert.equal(getPriority(t), '5');
   const prioAttr = t.attributes.find((x) => x.name === 'priority');
   assert.ok(prioAttr);
@@ -318,13 +316,15 @@ test('getPriority/setPriority: set, get, and clear removes the attribute', () =>
   assert.equal(prioAttr!.valueStatus, 'LOCAL');
 
   // Update priority
-  setPriority(t, '10');
+  setPriority(t, '10', doc.transAttrs);
   assert.equal(getPriority(t), '10');
 
-  // Clear priority (empty string removes the attribute)
-  setPriority(t, '');
-  assert.equal(getPriority(t), '');
-  assert.equal(t.attributes.some((x) => x.name === 'priority'), false);
+  // Clear priority: reverts to the global default, the row survives (Java's
+  // TPDelete refuses to delete a GLOBAL_FIXED row).
+  setPriority(t, '', doc.transAttrs);
+  assert.equal(getPriority(t), '1000');
+  assert.equal(t.attributes.some((x) => x.name === 'priority'), true);
+  assert.equal(prioAttr!.valueStatus, 'GLOBAL_VAR');
 });
 
 
@@ -419,6 +419,32 @@ test('deletePage removes dangling cross-page transitions', () => {
   assert.equal(doc.tabs.length, 1);
 });
 
+// F18: the global table on the deleted page kept `page === pnum`, which
+// after the page-shift is either another page's number (wrong page) or out
+// of range (page no longer exists). Unlike DrawArea.removePage (which
+// deletes the table outright), we keep it - it carries user positioning and
+// our "Table" visibility toggle is a separate preference - but it must land
+// somewhere valid.
+test('deletePage reassigns the global table to page 1 instead of leaving it on an invalid page', () => {
+  const doc = emptyDoc();
+  doc.tabs.push('Page 2', 'Page 3');
+  const table = { text: null, isGlobalTable: true, x: 10, y: 10, page: 2 };
+  doc.texts.push(table);
+  deletePage(doc, 2); // the table's own page
+  assert.equal(doc.tabs.length, 2);
+  assert.equal(table.page, 1, 'the table must land on a page that still exists');
+  assert.ok(doc.texts.includes(table), 'the table itself is kept, unlike Java');
+});
+
+test('deletePage leaves the global table alone when its page is unaffected', () => {
+  const doc = emptyDoc();
+  doc.tabs.push('Page 2', 'Page 3');
+  const table = { text: null, isGlobalTable: true, x: 10, y: 10, page: 3 };
+  doc.texts.push(table);
+  deletePage(doc, 1); // an earlier page - page 3 shifts down to page 2
+  assert.equal(table.page, 2, 'a table on a surviving page just renumbers normally');
+});
+
 test('deletePage renumbers attribute pages', () => {
   const doc = emptyDoc();
   doc.tabs.push('Page 2');
@@ -478,6 +504,94 @@ test('createTransition gives every point its own object (regression: all 8 point
   assert.notEqual(t.pageS.x, 999);
 });
 
+// F10: adding/removing/flipping a cross-page sibling shifts the whole
+// stagger group sharing an endpoint (getOffset's offset is a rank-out-of-
+// total, so it must be re-run for every sibling, not just the one that
+// changed). These regression tests target the specific call sites that used
+// to leave that group stale: createTransition (a genuinely NEW sibling was
+// already restaggering only itself), deleteSelection, deletePage, and
+// moveStateToPage (a transition flipping same-page <-> cross-page due to its
+// OWN endpoint moving must also refresh siblings that don't touch that state
+// at all).
+
+test('createTransition re-staggers existing cross-page siblings when a new one joins (F10)', () => {
+  // getOffset's stagger is (rank - average) * 40 - with only 1 or 2 siblings
+  // the first-created one always lands at offset 0 regardless, so this needs
+  // a 3rd sibling to show rank 1's offset actually shift (0 -> -40).
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 2);
+  const c = createState(doc, 300, 200, 2);
+  const d = createState(doc, 300, 400, 2);
+  const t1 = createTransition(doc, a, b, 1); // rank 1 of 1, offset 0
+  createTransition(doc, a, c, 1); // rank 2 of 2, offset 0 too - still no visible change
+  const before = t1.pageS.y;
+  createTransition(doc, a, d, 1); // rank 3 of 3 - now t1's offset must shift to -40
+  assert.notEqual(t1.pageS.y, before, 't1 must re-stagger once A has two more cross-page siblings');
+});
+
+test('deleteSelection re-staggers surviving cross-page siblings after one is deleted (F10)', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 2);
+  const c = createState(doc, 300, 200, 2);
+  const d = createState(doc, 300, 400, 2);
+  const t1 = createTransition(doc, a, b, 1); // rank 1 of 3, offset -40
+  const t2 = createTransition(doc, a, c, 1); // rank 2 of 3, offset 0
+  createTransition(doc, a, d, 1); // rank 3 of 3, offset 40
+  const t1Before = t1.pageS.y;
+
+  deleteSelection(doc, { kind: 'transition', index: doc.transitions.indexOf(t2) });
+
+  assert.equal(doc.transitions.length, 2);
+  assert.notEqual(t1.pageS.y, t1Before, 't1 must re-stagger once only 2 of the original 3 siblings remain');
+});
+
+test('deletePage re-staggers surviving cross-page siblings after a sibling\'s page is deleted (F10)', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2', 'Page 3', 'Page 4'];
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 2);
+  const c = createState(doc, 300, 200, 3);
+  const d = createState(doc, 300, 400, 4);
+  const t1 = createTransition(doc, a, b, 1); // rank 1 of 3, offset -40
+  createTransition(doc, a, c, 1); // rank 2 of 3, offset 0 - lives on page 3
+  createTransition(doc, a, d, 1); // rank 3 of 3, offset 40
+  const t1Before = t1.pageS.y;
+
+  deletePage(doc, 3); // removes state c and its transition to A
+
+  assert.equal(doc.transitions.length, 2);
+  assert.notEqual(t1.pageS.y, t1Before, 't1 must re-stagger once only 2 of the original 3 siblings remain');
+});
+
+test('moveStateToPage re-staggers cross-page siblings sharing the far endpoint, even ones that don\'t touch the moved state (F10)', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const w = createState(doc, 0, 0, 1);
+  const z = createState(doc, 0, 200, 1);
+  const b = createState(doc, 300, 0, 2);
+  const y = createState(doc, 300, 400, 2); // starts on the SAME page as b
+
+  const wb = createTransition(doc, w, b, 1); // cross-page from creation: rank 1 of 2, offset 0
+  createTransition(doc, z, b, 1); // rank 2 of 2, offset 40 - neither touches y
+  createTransition(doc, y, b, 2); // same-page as b for now (y hasn't moved yet)
+  // w->b and z->b share B as their ENDSTATE, so their stagger lives on the
+  // "end" side (pageE/eOffset) - the "start" side (pageS) staggers by each
+  // transition's own startState (w and z are each unique, so pageS never
+  // moves here; that would be the wrong field to assert on).
+  const wbBefore = wb.pageE.y;
+
+  // y moves off b's page: its own transition flips to cross-page, growing b's
+  // sibling group from 2 to 3 - wb doesn't touch y at all, but must still
+  // re-stagger since the group it belongs to just grew.
+  moveStateToPage(doc, doc.states.indexOf(y), 1);
+
+  assert.notEqual(wb.pageE.y, wbBefore, "wb must re-stagger once b's group grows from 2 to 3, even though wb never touches y");
+});
+
 test('reconnectTransition seeds cross-page geometry and re-pages the transition when the new endpoint is on another page', () => {
   const doc = emptyDoc();
   doc.tabs = ['Page 1', 'Page 2'];
@@ -491,6 +605,29 @@ test('reconnectTransition seeds cross-page geometry and re-pages the transition 
   assert.equal(r.ok, true);
   assert.equal(t.page, 1, "a transition's own page tracks its start state's page");
   assert.equal(t.pageS.x, doc.preferences.pageSizeW - 50, 'reconnecting across pages docks the connector');
+});
+
+// F16: reconnectTransition never checked t.stub at all, so reconnecting a
+// stub to a different start state left its tip (pageS) pointing at wherever
+// the OLD start state used to be - the property dialog's own follow-up
+// setTransitionStub call is a no-op here since t.stub doesn't change, so
+// there was no way to repair it from the UI.
+test('reconnectTransition re-seeds stub geometry on the new start state, not the old one', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const c = createState(doc, 600, 300, 1); // the new start state, elsewhere on the page
+  const t = createTransition(doc, a, b, 1);
+  if (t.kind !== 'transition') throw new Error('expected a normal transition');
+  setTransitionStub(doc, t, true);
+  const oldStartPt = { ...t.startPt };
+
+  const r = reconnectTransition(doc, doc.transitions.indexOf(t), 'state2', 'state1');
+  assert.equal(r.ok, true);
+  assert.equal(t.stub, true, 'still a stub after reconnecting');
+  assert.notDeepEqual(t.startPt, oldStartPt, "the anchor must move onto the new start state, not stay at the old one's border point");
+  assert.equal(t.startStateIndex, 0, 'seeded at border point 0, like a freshly-stubbed transition');
+  assert.equal(t.pageS.x, t.startPt.x + 60, 'tip re-seeded 60px to the right of the new anchor');
 });
 
 test("moveStateToPage keeps a normal transition's page tracking its start state's page", () => {

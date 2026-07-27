@@ -52,6 +52,16 @@ export function showContextMenu(clientX: number, clientY: number, items: MenuIte
   document.body.appendChild(menu);
   currentMenu = menu;
 
+  // Keep the menu on screen. Without this, right-clicking near the bottom or
+  // right edge of the canvas opened a menu running off the viewport (F19).
+  const rect = menu.getBoundingClientRect();
+  if (rect.bottom > window.innerHeight) {
+    menu.style.top = `${Math.max(0, clientY - rect.height)}px`;
+  }
+  if (rect.right > window.innerWidth) {
+    menu.style.left = `${Math.max(0, clientX - rect.width)}px`;
+  }
+
   const dismiss = () => {
     closeMenu();
     document.removeEventListener('click', dismiss);

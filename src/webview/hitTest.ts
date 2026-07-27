@@ -160,13 +160,18 @@ export function hitTest(ctx: CanvasRenderingContext2D, doc: FzmDocument, page: n
   const statePage = new Map(doc.states.map((s) => [s.name, s.page]));
   for (let i = doc.transitions.length - 1; i >= 0; i--) {
     const t = doc.transitions[i];
-    if (transitionOnPage(doc, t, page)) {
-      // A same-page stub is a short segment (startPt -> pageS), not the curve.
-      if (t.kind === 'transition' && t.stub) {
+    // Stub wins over cross-page (matches render.ts and Java's paintComponent,
+    // which gates every cross-page branch on !stub): a stub is only
+    // hit-testable on its start state's page, even if its endpoints end up on
+    // different pages.
+    if (t.kind === 'transition' && t.stub) {
+      if (statePage.get(t.startState) === page) {
         const { pt, tip } = sameStub(t);
         if (distToSegment(x, y, pt, tip) <= CURVE_HIT_WIDTH / 2) return { kind: 'transition', index: i };
-        continue;
       }
+      continue;
+    }
+    if (transitionOnPage(doc, t, page)) {
       const path = new Path2D();
       path.moveTo(t.startPt.x, t.startPt.y);
       path.bezierCurveTo(t.startCtrlPt.x, t.startCtrlPt.y, t.endCtrlPt.x, t.endCtrlPt.y, t.endPt.x, t.endPt.y);

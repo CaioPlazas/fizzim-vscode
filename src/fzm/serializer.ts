@@ -22,6 +22,15 @@ function dbl(n: number): string {
   return Number.isInteger(n) ? `${n}.0` : `${n}`;
 }
 
+// Java reads x0/y0/x1/y1, x2Obj/y2Obj, and text x/y as ints
+// (FileParser.java:471-474, :656-664, :375-377) - a fractional value throws
+// NumberFormatException in real Fizzim on load. main.ts now rounds at every
+// drag site, so this is a no-op for anything the extension itself produces;
+// it's a guard against the format's real contract, not a behavior change.
+function int(n: number): number {
+  return Math.round(n);
+}
+
 function serializeAttribute(a: ObjAttribute, indent = 1): string {
   const i1 = ind(indent + 1);
   const i2 = ind(indent + 2);
@@ -39,8 +48,8 @@ function serializeAttribute(a: ObjAttribute, indent = 1): string {
   // resetval status lines, not their own status - reproduced for fidelity.
   out += field('useratts', a.useratts, a.typeStatus);
   out += field('resetval', a.resetval, a.typeStatus);
-  out += `${i2}<x2Obj>\n${i2}${a.x2Obj}\n${i2}</x2Obj>\n`;
-  out += `${i2}<y2Obj>\n${i2}${a.y2Obj}\n${i2}</y2Obj>\n`;
+  out += `${i2}<x2Obj>\n${i2}${int(a.x2Obj)}\n${i2}</x2Obj>\n`;
+  out += `${i2}<y2Obj>\n${i2}${int(a.y2Obj)}\n${i2}</y2Obj>\n`;
   out += `${i2}<page>\n${i2}${a.page}\n${i2}</page>\n`;
   out += `${i1}</${a.name}>\n`;
   return out;
@@ -55,10 +64,10 @@ function serializeState(s: FzmState): string {
   out += `${ind(1)}<attributes>\n`;
   for (const a of s.attributes) out += serializeAttribute(a, 1);
   out += `${ind(1)}</attributes>\n`;
-  out += tag1('x0', s.x0);
-  out += tag1('y0', s.y0);
-  out += tag1('x1', s.x1);
-  out += tag1('y1', s.y1);
+  out += tag1('x0', int(s.x0));
+  out += tag1('y0', int(s.y0));
+  out += tag1('x1', int(s.x1));
+  out += tag1('y1', int(s.y1));
   out += tag1('reset', String(s.reset));
   out += tag1('page', s.page);
   out += tag1('color', s.color);
@@ -128,8 +137,8 @@ function serializeLoopback(t: FzmLoopback): string {
 function serializeText(t: FzmText): string {
   let out = '<textObj>\n';
   out += t.isGlobalTable ? 'fzm_globalTable\n' : `${t.text ?? ''}\n`;
-  out += tag1('x', t.x);
-  out += tag1('y', t.y);
+  out += tag1('x', int(t.x));
+  out += tag1('y', int(t.y));
   out += tag1('page', t.page);
   out += '</textObj>\n';
   return out;

@@ -20,6 +20,7 @@ import {
   setGlobalAttrField,
   STATE_ATTRS,
   TRANS_ATTRS,
+  validateGlobals,
   validateOutputEdit,
 } from './globals';
 import { showMessage } from './formDialog';
@@ -258,7 +259,12 @@ export function showGlobalEditor(doc: FzmDocument, initialTab = MACHINE): Promis
         } else if (currentTab === OUTPUTS) {
           cell(cellInput(attr.value, !editable, (v) => outputCell(1, 'value', v)));
         } else {
-          cell(cellInput(attr.value, !editable, (v) => setGlobalAttrField(attr, 'value', v)));
+          // An output's States-tab mirror row: manage Value (and every column
+          // below except Type) from the Outputs tab instead (Properties.java
+          // :247-260 rejects every column but Type here) - otherwise the edit
+          // silently snaps back on OK, since reconcileGlobals overwrites these
+          // from doc.outputs.
+          cell(cellInput(attr.value, !editable || outputMirror, (v) => setGlobalAttrField(attr, 'value', v)));
         }
 
         const machineTypes = currentTab === MACHINE ? MACHINE_TYPE_OPTIONS[attr.name] : undefined;
@@ -268,20 +274,21 @@ export function showGlobalEditor(doc: FzmDocument, initialTab = MACHINE): Promis
           const opts = machineTypes.includes(attr.type) ? machineTypes : [attr.type, ...machineTypes];
           cell(cellSelect(attr.type, opts.map((t) => ({ value: t, label: t || '(none)' })), (v) => setGlobalAttrField(attr, 'type', v)));
         } else {
+          // Type stays editable even on a mirror row - Java does too.
           cell(cellInput(attr.type, !editable, (v) => setGlobalAttrField(attr, 'type', v)));
         }
         cell(
-          editable && !lockVisColor
+          editable && !lockVisColor && !outputMirror
             ? cellSelect(String(attr.visibility), VIS_OPTIONS, (v) => setGlobalAttrField(attr, 'visibility', v))
             : cellInput(VIS_OPTIONS[attr.visibility]?.label ?? String(attr.visibility), true, () => {})
         );
-        cell(cellInput(attr.comment, !editable, (v) => setGlobalAttrField(attr, 'comment', v)));
-        cell(cellColor(attr.color, !editable || lockVisColor, (hex) => setGlobalAttrField(attr, 'color', hex)));
-        cell(cellInput(attr.useratts, !editable, (v) => setGlobalAttrField(attr, 'useratts', v)));
+        cell(cellInput(attr.comment, !editable || outputMirror, (v) => setGlobalAttrField(attr, 'comment', v)));
+        cell(cellColor(attr.color, !editable || lockVisColor || outputMirror, (hex) => setGlobalAttrField(attr, 'color', hex)));
+        cell(cellInput(attr.useratts, !editable || outputMirror, (v) => setGlobalAttrField(attr, 'useratts', v)));
         if (currentTab === OUTPUTS) {
           cell(cellInput(attr.resetval, !editable, (v) => outputCell(7, 'resetval', v)));
         } else {
-          cell(cellInput(attr.resetval, !editable, (v) => setGlobalAttrField(attr, 'resetval', v)));
+          cell(cellInput(attr.resetval, !editable || outputMirror, (v) => setGlobalAttrField(attr, 'resetval', v)));
         }
 
         const delCell = document.createElement('td');
@@ -372,6 +379,12 @@ export function showGlobalEditor(doc: FzmDocument, initialTab = MACHINE): Promis
     cancelBtn.addEventListener('click', () => cleanup(null));
     const okBtn = button('OK', true);
     okBtn.addEventListener('click', () => {
+      // Properties.java's GPOK refuses to close on a duplicate name or an
+      // output missing its type - without this, e.g. naming a state
+      // user-attribute the same as an existing output silently corrupted
+      // doc.stateAttrs with two identically-named rows.
+      const err = validateGlobals(working);
+      if (err) { void showMessage(err); return; }
       // Re-sync every state/transition against the edited global lists before
       // handing the doc back (Fizzim's updateStates/updateTrans on dialog OK).
       reconcileGlobals(working);

@@ -165,8 +165,9 @@ export function visibleAttrLabels(attributes: ObjAttribute[], info: OutputInfo):
 
 // A state's text anchor: horizontally centered, one quarter down the ellipse
 // (StateObj.getCenter uses y0 + h/4). Visible attributes stack down from here.
+// F17: StateObj.getCenter uses integer division (int x0/x1/y0/y1).
 export function stateAnchor(s: FzmState): Point {
-  return { x: s.x0 + (s.x1 - s.x0) / 2, y: s.y0 + (s.y1 - s.y0) / 4 };
+  return { x: s.x0 + Math.trunc((s.x1 - s.x0) / 2), y: s.y0 + Math.trunc((s.y1 - s.y0) / 4) };
 }
 
 // Draws an object's visible attribute labels, each centered on
@@ -588,9 +589,18 @@ export function render(
     }
     const sp = statePage.get(t.startState);
     const ep = statePage.get(t.endState);
-    if (sp === page && ep === page) {
-      if (t.stub) drawSameStub(ctx, t);
-      else drawCurve(ctx, t);
+    if (t.stub) {
+      // Stub wins over cross-page (StateTransitionObj.java's paintComponent
+      // gates every cross-page branch on !stub, and only draws the stub on
+      // the start state's page - "if(currPage == sPage && stub)"). Even if the
+      // endpoints end up on different pages (e.g. after Move to Page with
+      // Stub? already ticked), nothing draws on the end state's page.
+      if (sp === page) {
+        drawSameStub(ctx, t);
+        drawAttrLabels(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page));
+      }
+    } else if (sp === page && ep === page) {
+      drawCurve(ctx, t);
       // Same-page: all labels draw here, regardless of their stored page.
       drawAttrLabels(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page));
     } else if (sp === page) {
@@ -624,7 +634,7 @@ export function render(
     } else {
       const t = doc.transitions[d.index];
       if (t) {
-        const fp = t.kind === 'transition' && !transitionOnPage(doc, t, page) ? page : undefined;
+        const fp = t.kind === 'transition' && !t.stub && !transitionOnPage(doc, t, page) ? page : undefined;
         drawLabelBoxes(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page), fp);
       }
     }
@@ -638,10 +648,14 @@ export function render(
       drawLabelBoxes(ctx, s.attributes, outputInfo, stateAnchor(s));
     } else if (selection.kind === 'transition') {
       const t = doc.transitions[selection.index];
+      // Stub wins over cross-page (matches the draw loop above and Java's
+      // paintComponent, which gates every cross-page branch on !stub).
+      const isStub = t.kind === 'transition' && t.stub;
+      const crossPage = t.kind === 'transition' && !isStub && !transitionOnPage(doc, t, page);
       // Equation / priority / any visible label of the selected transition.
-      const fp = t.kind === 'transition' && !transitionOnPage(doc, t, page) ? page : undefined;
+      const fp = crossPage ? page : undefined;
       drawLabelBoxes(ctx, t.attributes, outputInfo, transitionLabelAnchor(t, doc, page), fp);
-      if (t.kind === 'transition' && !transitionOnPage(doc, t, page)) {
+      if (crossPage) {
         // Cross-page: this page's four handles + guide lines (Java's paint).
         const side = statePage.get(t.startState) === page ? 'source' : 'dest';
         const [anchor, anchorCtrl, edgeCtrl, edge] =
@@ -659,7 +673,7 @@ export function render(
         ctx.lineTo(edgeCtrl.x, edgeCtrl.y);
         ctx.stroke();
         for (const p of [anchor, anchorCtrl, edgeCtrl, edge]) drawHandle(ctx, p.x, p.y);
-      } else if (t.kind === 'transition' && t.stub) {
+      } else if (isStub) {
         drawStubSelection(ctx, t);
       } else {
         drawCurveSelection(ctx, t);

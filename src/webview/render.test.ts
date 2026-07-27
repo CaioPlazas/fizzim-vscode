@@ -44,10 +44,19 @@ function attr(over: Partial<ObjAttribute>): ObjAttribute {
   };
 }
 
+// A real Fizzim document always has at least the reserved state/trans
+// "name"/"equation" global attributes (defaultDocument() seeds the same) -
+// createState/createTransition seed new objects from these lists, so a doc
+// without them isn't a realistic starting point (F20).
 function emptyDoc(): FzmDocument {
   return {
     version: '14.02.28', versionInt: 140228,
-    machine: [], inputs: [], outputs: [], stateAttrs: [], transAttrs: [],
+    machine: [], inputs: [], outputs: [],
+    stateAttrs: [attr({ name: 'name', nameStatus: 'ABS', value: 'def_name', visibility: 1, type: 'def_type', valueStatus: 'GLOBAL_VAR', typeStatus: 'GLOBAL_VAR' })],
+    transAttrs: [
+      attr({ name: 'name', nameStatus: 'ABS', value: 'def_name', visibility: 0, type: 'def_type', valueStatus: 'GLOBAL_VAR', typeStatus: 'GLOBAL_VAR' }),
+      attr({ name: 'equation', nameStatus: 'ABS', value: '1', visibility: 1, type: 'def_type', valueStatus: 'GLOBAL_VAR', typeStatus: 'GLOBAL_VAR' }),
+    ],
     tabs: ['Page 1'], preferences: { ...DEFAULT_PREFERENCES }, states: [], transitions: [], texts: [],
   };
 }
@@ -85,8 +94,9 @@ test('stateAnchor centers horizontally and sits a quarter down; curveAnchor is t
   const doc = emptyDoc();
   const s = createState(doc, 100, 200, 1);
   const a = stateAnchor(s);
-  assert.equal(a.x, s.x0 + (s.x1 - s.x0) / 2);
-  assert.equal(a.y, s.y0 + (s.y1 - s.y0) / 4);
+  // F17: Java's getCenter uses integer division (int x0/x1/y0/y1).
+  assert.equal(a.x, s.x0 + Math.trunc((s.x1 - s.x0) / 2));
+  assert.equal(a.y, s.y0 + Math.trunc((s.y1 - s.y0) / 4));
   const b = createState(doc, 400, 200, 1);
   const t = createTransition(doc, s, b, 1);
   const c = curveAnchor(t);

@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.5.4
+
+Bug fix sweep from a systematic audit against the original Fizzim's Java
+source. No change to the `.fzm` format itself, but several of these fix real
+data-loss / wrong-HDL bugs:
+
+- **Fixed: a Mealy output set on a transition could silently vanish** (and
+  its assignment disappear from generated HDL) the next time Global
+  Attributes was opened and closed.
+- **Fixed: dragging a state at any zoom level other than 100% could write
+  fractional coordinates into the `.fzm` file**, which real Fizzim rejects on
+  load.
+- **Fixed: clearing an output's value on a state, or a transition's Priority,
+  used to blank/delete it** instead of reverting to the declared default —
+  now matches the original Fizzim, and avoids a "value cannot be determined"
+  error on Generate HDL for combinational outputs.
+- **Fixed: a newly declared reset state used a type incompatible with
+  one-hot encoding**, causing Generate HDL to fail with custom encoding args.
+- **Fixed: a hand-shaped transition curve could reset when its states were
+  group-dragged together, or slowly dragged across a long distance.**
+- **Fixed: dragging an object far past the top-left corner of the canvas
+  could strand it permanently off-screen**, unrecoverable except by undo.
+- **Fixed: a same-page "stub" transition and a cross-page connector could
+  conflict** — toggling Stub off on a cross-page transition left its
+  connector collapsed on the state with no way to fix it from the UI.
+- **Fixed: cross-page connectors didn't re-dock after a page-size change**,
+  and didn't re-stagger when a sibling connector was added or removed.
+- **Fixed several Global Attributes dialog gaps**: blanking a Type column,
+  editing an output's mirrored row from the States tab, duplicate/invalid
+  names going unvalidated, and a rejected rename discarding every other
+  pending edit in the dialog.
+- **Fixed: dragging a stub's anchor or tip around a state's border didn't
+  correctly rotate the arrow outward.**
+- **Fixed: reconnecting a stub transition to a new start state left its tip
+  pointing at the old one.**
+- **Fixed: deleting a page could leave the on-canvas global attributes table
+  on an invalid page number.**
+- **Fixed: a context menu opened near the bottom or right edge of the canvas
+  could run off-screen**, making some items unreachable.
+
 ## 1.5.3
 
 Bug fix. No change to the `.fzm` format or the generated Verilog/VHDL.

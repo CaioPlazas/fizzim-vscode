@@ -100,6 +100,20 @@ test('applyAttributeEdits: clearing the Value column reverts to the global defau
   assert.equal(a.valueStatus, 'GLOBAL_VAR');
 });
 
+// F11: Java's restore-on-empty is `col != 2 && value.equals("")` - any
+// column, not just Value - and GeneralObj.java:129-130 explicitly restores a
+// blank Type too. Blanking a transition output row's Type used to set
+// type = '' permanently (typeStatus LOCAL), which then survived every future
+// reconcile - fizzim.pl's `{type} eq "output"` filter misses it and that
+// transition's output assignment silently vanishes from the HDL.
+test('applyAttributeEdits: clearing the Type column reverts to the global default type (F11)', () => {
+  const globalDefault = attr({ name: 'out0', type: 'output', typeStatus: 'GLOBAL_VAR' });
+  const a = attr({ name: 'out0', value: '1', type: 'output', typeStatus: 'GLOBAL_VAR' });
+  applyAttributeEdits([a], [fullEdit(a, { type: '' })], [globalDefault]);
+  assert.equal(a.type, 'output', 'blank reverts to the default type, not "" ');
+  assert.equal(a.typeStatus, 'GLOBAL_VAR');
+});
+
 test('transitionDialogAttributes adds a placeholder row for each declared output not yet on the transition', () => {
   const doc = emptyDoc();
   const s0 = createState(doc, 0, 0, 1);
@@ -150,6 +164,34 @@ test('setTransitionStub toggles the stub flag and seeds/tears down its geometry'
 
   setTransitionStub(doc, t, false);
   assert.equal(t.stub, false);
+});
+
+// F8: untick Stub? on a genuinely cross-page transition (ticking Stub? seeds
+// local geometry from the start state's own border, ignoring page-ness) - the
+// off-branch used to call recomputeTransition() unconditionally, with no
+// cross-page check, silently computing a same-page curve for endpoints that
+// aren't on the same page. The connector collapsed on top of the state with
+// no way to repair it from the UI otherwise (recomputeCrossPage is only
+// reachable again via moveStateToPage/reconnectTransition).
+test('setTransitionStub off re-docks a cross-page transition via recomputeCrossPage, not a same-page curve', () => {
+  const doc = emptyDoc();
+  doc.tabs.push('Page 2');
+  const s0 = createState(doc, 0, 0, 1);
+  const s1 = createState(doc, 300, 0, 2); // different page - genuinely cross-page
+  const t = createTransition(doc, s0, s1, 1);
+  if (t.kind !== 'transition') throw new Error('expected a normal transition');
+
+  setTransitionStub(doc, t, true);
+  assert.equal(t.stub, true);
+
+  setTransitionStub(doc, t, false);
+  assert.equal(t.stub, false);
+  // recomputeCrossPage's signature: startCtrlPt sits exactly 20px right of
+  // startPt (geometry.ts), which a same-page recomputeTransition would not
+  // produce (its control points come from trig on the states' relative angle).
+  assert.equal(t.startCtrlPt.x, t.startPt.x + 20);
+  assert.equal(t.startCtrlPt.y, t.startPt.y);
+  assert.equal(t.pageS.x, doc.preferences.pageSizeW - 50);
 });
 
 test('applyAttributeEdits renames a LOCAL attribute', () => {

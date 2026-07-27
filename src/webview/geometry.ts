@@ -13,13 +13,19 @@ import { FzmDocument, FzmLoopback, FzmState, FzmTransition, Point } from '../fzm
 
 export function getBorderPts(s: FzmState): Point[] {
   const pts: Point[] = [];
-  const w = s.x1 - s.x0;
-  const h = s.y1 - s.y0;
+  // F17: Java's w/h are ints, so `w/2`/`h/2` are integer division, truncated
+  // ONCE and reused for both the center offset and the cos/sin multiplier
+  // (StateObj.java:272-286) - not the float w/2 our port used to compute
+  // twice. For odd width/height this puts the center 0.5px differently,
+  // shifting all 36 border points by up to 1px, which can flip which one
+  // nearestBorderIndex picks for a near-tie.
+  const halfW = Math.trunc((s.x1 - s.x0) / 2);
+  const halfH = Math.trunc((s.y1 - s.y0) / 2);
   for (let i = 0; i < 36; i++) {
     const angle = ((2 * Math.PI) / 36) * i;
     pts.push({
-      x: Math.trunc(s.x0 + w / 2 + (w / 2) * Math.cos(angle)),
-      y: Math.trunc(s.y0 + h / 2 + (h / 2) * Math.sin(angle)),
+      x: Math.trunc(s.x0 + halfW + halfW * Math.cos(angle)),
+      y: Math.trunc(s.y0 + halfH + halfH * Math.sin(angle)),
     });
   }
   return pts;
@@ -56,8 +62,9 @@ function getAngle(outer: Point, inner: Point): number {
   return alpha;
 }
 
+// F17: StateObj.getRealCenter uses integer division (int x0/x1/y0/y1).
 function realCenter(s: FzmState): Point {
-  return { x: s.x0 + (s.x1 - s.x0) / 2, y: s.y0 + (s.y1 - s.y0) / 2 };
+  return { x: s.x0 + Math.trunc((s.x1 - s.x0) / 2), y: s.y0 + Math.trunc((s.y1 - s.y0) / 2) };
 }
 
 export function recomputeTransition(t: FzmTransition, startState: FzmState, endState: FzmState): void {
@@ -129,14 +136,42 @@ export function recomputeTransition(t: FzmTransition, startState: FzmState, endS
 // recomputeTransition() (Java's setEndPts()) only when the states' relative
 // quadrant has flipped by more than a 20px tolerance, mirroring Java's
 // recalcCheck().
-export function moveTransition(t: FzmTransition, startState: FzmState, endState: FzmState): void {
+function translateTransition(t: FzmTransition, newStartPt: Point, newEndPt: Point): void {
+  t.startCtrlPt = {
+    x: t.startCtrlPt.x + (newStartPt.x - t.startPt.x),
+    y: t.startCtrlPt.y + (newStartPt.y - t.startPt.y),
+  };
+  t.endCtrlPt = {
+    x: t.endCtrlPt.x + (newEndPt.x - t.endPt.x),
+    y: t.endCtrlPt.y + (newEndPt.y - t.endPt.y),
+  };
+  t.startPt = newStartPt;
+  t.endPt = newEndPt;
+}
+
+// `baseline`, when given, is the transition's startPt/endPt as they were at
+// the *start* of the drag (StateTransitionObj.setParentModified, called once
+// on mouse-down) - recalcCheck (:1097-1109) always compares against that
+// frozen snapshot, not the previous call's result, so a slow multi-frame drag
+// that gradually crosses a quadrant boundary is still caught (each individual
+// per-frame delta might be well under the +-20px tolerance even though the
+// *total* since drag-start isn't). Omitting it falls back to the transition's
+// current stored points, matching the old per-call behavior for one-shot
+// callers like resizeState that have no "drag start" to snapshot.
+export function moveTransition(
+  t: FzmTransition,
+  startState: FzmState,
+  endState: FzmState,
+  baseline?: { startPt: Point; endPt: Point }
+): void {
   const startBorderPts = getBorderPts(startState);
   const endBorderPts = getBorderPts(endState);
   const newStartPt = startBorderPts[t.startStateIndex];
   const newEndPt = endBorderPts[t.endStateIndex];
 
-  const dx1 = t.startPt.x - t.endPt.x;
-  const dy1 = t.startPt.y - t.endPt.y;
+  const base = baseline ?? { startPt: t.startPt, endPt: t.endPt };
+  const dx1 = base.startPt.x - base.endPt.x;
+  const dy1 = base.startPt.y - base.endPt.y;
   const dx2 = newStartPt.x - newEndPt.x;
   const dy2 = newStartPt.y - newEndPt.y;
   const flipped = !(
@@ -148,17 +183,19 @@ export function moveTransition(t: FzmTransition, startState: FzmState, endState:
     recomputeTransition(t, startState, endState);
     return;
   }
+  translateTransition(t, newStartPt, newEndPt);
+}
 
-  t.startCtrlPt = {
-    x: t.startCtrlPt.x + (newStartPt.x - t.startPt.x),
-    y: t.startCtrlPt.y + (newStartPt.y - t.startPt.y),
-  };
-  t.endCtrlPt = {
-    x: t.endCtrlPt.x + (newEndPt.x - t.endPt.x),
-    y: t.endCtrlPt.y + (newEndPt.y - t.endPt.y),
-  };
-  t.startPt = newStartPt;
-  t.endPt = newEndPt;
+// Ports moveEndPts' unconditional override (StateTransitionObj.java:450, "or
+// if multiple states selected, dont need to recalculate"): when both endpoint
+// states are moving together (a group drag), always translate and never
+// recompute, regardless of recalcCheck - a group drag's relative geometry
+// between the two connected states never changes, so there is nothing to
+// recompute a curve *for*.
+export function translateTransitionOnly(t: FzmTransition, startState: FzmState, endState: FzmState): void {
+  const newStartPt = getBorderPts(startState)[t.startStateIndex];
+  const newEndPt = getBorderPts(endState)[t.endStateIndex];
+  translateTransition(t, newStartPt, newEndPt);
 }
 
 // Ports LoopbackTransitionObj.setEndPts(x,y), used when a brand-new loopback
@@ -213,6 +250,38 @@ export function recomputeStub(t: FzmTransition, startState: FzmState): void {
   const len = Math.round(Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y));
   t.startPt = borderPts[t.startStateIndex] ?? borderPts[0];
   t.pageS = { x: Math.trunc(t.startPt.x + len * Math.cos(angle)), y: Math.trunc(t.startPt.y - len * Math.sin(angle)) };
+}
+
+// Re-anchors a stub's ANCHOR end when the user drags it around the state's
+// border (StateTransitionObj.adjustShapeOrPosition's START branch, :646-666):
+// re-snap startPt to the nearest border point, then re-derive the tip's
+// outward angle from the state's CENTER through the new anchor point,
+// preserving the stub's existing length. A pure offset-translate (what this
+// used to do) keeps the tip pointed in the old absolute direction, so
+// dragging the anchor around to the far side of the state left the arrow
+// pointing straight through the state body instead of rotating outward.
+export function adjustStubAnchor(t: FzmTransition, startState: FzmState, x: number, y: number): void {
+  const { point, index } = nearestBorderPoint(startState, x, y);
+  const len = Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y);
+  t.startPt = point;
+  t.startStateIndex = index;
+  const angle = getAngle(point, realCenter(startState));
+  t.pageS = { x: Math.trunc(point.x + len * Math.cos(angle)), y: Math.trunc(point.y - len * Math.sin(angle)) };
+}
+
+// Re-anchors a stub's TIP end when dragged (adjustShapeOrPosition's PAGES
+// branch, :688-703): the tip moves freely, then the outward angle from the
+// state's center through the new tip position is converted back to a border
+// index (Java's `index = 36 - round(angle/2*PI * 36)`), re-snapping the
+// anchor to follow. Without this, dragging the tip only moved pageS, leaving
+// startStateIndex/startPt (and the visible anchor) stuck at their old spot.
+export function adjustStubTip(t: FzmTransition, startState: FzmState, x: number, y: number): void {
+  t.pageS = { x, y };
+  const angle = getAngle(t.pageS, realCenter(startState));
+  let index = 36 - Math.round((angle / (Math.PI * 2)) * 36);
+  if (index > 35) index -= 36;
+  t.startStateIndex = index;
+  t.startPt = getBorderPts(startState)[index];
 }
 
 // Re-anchors a loopback when its state moves/resizes. Java's updateObj
@@ -297,4 +366,38 @@ export function recomputeCrossPage(doc: FzmDocument, t: FzmTransition): void {
   t.pageSC = { x: doc.preferences.pageSizeW - 70, y: t.startPt.y + sOffset };
   t.pageE = { x: 50, y: t.endPt.y + eOffset };
   t.pageEC = { x: 70, y: t.endPt.y + eOffset };
+}
+
+// Ports DrawArea.updatePageConn: re-docks every cross-page connector, called
+// on any page-size change (pageS/pageSC sit at pageSizeW-50/-70 - stale after
+// a resize until some endpoint state happens to move). Java's companion
+// moveOnResize (pulling states/text back onto a shrunk page) is deliberately
+// NOT ported - clamping objects to the page was already skipped by design
+// (NEXT_STEP.md round 2, STEP 10) so dragging/growing the canvas keeps working.
+export function updatePageConnectors(doc: FzmDocument): void {
+  const pageOf = new Map(doc.states.map((s) => [s.name, s.page]));
+  for (const t of doc.transitions) {
+    if (t.kind === 'loopback') continue;
+    const sp = pageOf.get(t.startState);
+    const ep = pageOf.get(t.endState);
+    if (sp !== undefined && ep !== undefined && sp !== ep) recomputeCrossPage(doc, t);
+  }
+}
+
+// Ports DrawArea.pageConnUpdate: re-staggers every cross-page connector
+// sharing a page-connector side with any of `stateNames` (getOffset's stagger
+// is a rank-out-of-total among siblings on that side, so adding or removing
+// one sibling shifts all the others - StateTransitionObj.initTrans calls this
+// after wiring a new cross-page transition; deleting one needs the same
+// refresh, which nothing previously did).
+export function restaggerCrossPage(doc: FzmDocument, stateNames: Set<string> | string[]): void {
+  const names = stateNames instanceof Set ? stateNames : new Set(stateNames);
+  const pageOf = new Map(doc.states.map((s) => [s.name, s.page]));
+  for (const t of doc.transitions) {
+    if (t.kind === 'loopback') continue;
+    const sp = pageOf.get(t.startState);
+    const ep = pageOf.get(t.endState);
+    if (sp === undefined || ep === undefined || sp === ep) continue;
+    if (names.has(t.startState) || names.has(t.endState)) recomputeCrossPage(doc, t);
+  }
 }
