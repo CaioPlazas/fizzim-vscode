@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.3
+
+Bug fix. No change to the `.fzm` format or the generated Verilog/VHDL.
+
+- **Fixed: a new state/transition/loopback didn't pick up an already-declared
+  Priority, Graycode, custom attribute, or output until Global Attributes was
+  reopened.** Drawing a transition after clicking "Add Priority" produced one
+  with no priority row at all; the same gap affected a new state missing an
+  already-declared output. New objects are now seeded from the current global
+  attribute lists immediately, matching the original Fizzim.
+
 ## 1.5.2
 
 Bug fix. No change to the `.fzm` format or the generated Verilog/VHDL.

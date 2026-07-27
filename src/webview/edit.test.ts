@@ -33,10 +33,28 @@ import { addOutput } from './globals';
 import { getBorderPts } from './geometry';
 import { DEFAULT_PREFERENCES, FzmDocument, FzmLoopback, ObjAttribute } from '../fzm/model';
 
+// Matches model.ts's private `attr()` helper: a global attribute with GLOBAL_VAR
+// status on every field but name.
+function globalAttr(name: string, value: string, visibility: number, type: string, nameStatus: string): ObjAttribute {
+  return {
+    name, nameStatus, value, valueStatus: 'GLOBAL_VAR',
+    visibility, visibilityStatus: 'GLOBAL_VAR', type, typeStatus: 'GLOBAL_VAR',
+    comment: '', commentStatus: 'GLOBAL_VAR', color: -16777216, colorStatus: 'GLOBAL_VAR',
+    useratts: '', userattsStatus: 'GLOBAL_VAR', resetval: '', resetvalStatus: 'GLOBAL_VAR',
+    x2Obj: 0, y2Obj: 0, page: -1,
+  };
+}
+
+// A real Fizzim document always has at least the reserved state/trans
+// "name"/"equation" global attributes (defaultDocument() seeds the same) -
+// createState/createTransition/createLoopback seed new objects from these
+// lists, so a doc without them isn't a realistic starting point.
 function emptyDoc(): FzmDocument {
   return {
     version: '14.02.28', versionInt: 140228,
-    machine: [], inputs: [], outputs: [], stateAttrs: [], transAttrs: [],
+    machine: [], inputs: [], outputs: [],
+    stateAttrs: [globalAttr('name', 'def_name', 1, 'def_type', 'ABS')],
+    transAttrs: [globalAttr('name', 'def_name', 0, 'def_type', 'ABS'), globalAttr('equation', '1', 1, 'def_type', 'ABS')],
     tabs: ['Page 1'], preferences: { ...DEFAULT_PREFERENCES }, states: [], transitions: [], texts: [],
   };
 }
