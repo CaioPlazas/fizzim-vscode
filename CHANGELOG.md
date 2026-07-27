@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.5 — new-object attribute seeding fix (pre-release)
+
+No change to the `.fzm` format or the generated Verilog/VHDL.
+
+- **Fixed: a new state/transition/loopback didn't pick up an already-declared
+  Priority, Graycode, custom attribute, or output until Global Attributes was
+  reopened.** Drawing a transition after clicking "Add Priority" produced one
+  with no priority row at all; the same gap affected a new state missing an
+  already-declared output. New objects are now seeded from the current global
+  attribute lists immediately, matching the original Fizzim.
+
 ## 2.0.4 — transition curve reset fix (pre-release)
 
 No change to the `.fzm` format or the generated Verilog/VHDL.

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { addGraycode, addInput, addOutput, addPriority, addReset, addUserAttribute, deleteGlobalAttr, globalList, hasReset, hasTransAttr, MACHINE, OUTPUTS, reconcileGlobals, renameGlobalAttr, setGlobalAttrField, STATE_ATTRS, TRANS_ATTRS, validateOutputEdit } from './globals';
-import { createState, createTransition, sanitizeLocalOutputTypes } from './edit';
+import { createLoopback, createState, createTransition, sanitizeLocalOutputTypes } from './edit';
 import { DEFAULT_PREFERENCES, defaultDocument, FzmDocument, ObjAttribute } from '../fzm/model';
 
 function docWithStates(names: string[]): FzmDocument {
@@ -31,6 +31,40 @@ test('addPriority adds a single global+per-transition priority (default 1000), i
   // second add is a no-op (Fizzim disables the button once it exists)
   assert.equal(addPriority(doc), false);
   assert.equal(t.attributes.filter((a) => a.name === 'priority').length, 1);
+});
+
+// Regression: a transition/loopback created via createTransition/createLoopback
+// used to be seeded with only a hardcoded name+equation, ignoring whatever the
+// global transAttrs list already declared (priority, graycode, custom attrs) -
+// so a transition drawn after "Add Priority" was clicked silently had no
+// priority row until Global Attributes was reopened (which runs a full
+// reconcile and mirrors it in retroactively). createTransition/createLoopback
+// now seed straight from doc.transAttrs (Java's `trans.updateAttrib(globalList,
+// 4)`, called right after construction), so this must show up immediately.
+test('a transition/loopback created after priority+graycode were declared is seeded with them immediately', () => {
+  const doc = docWithStates(['A', 'B']);
+  assert.equal(addPriority(doc), true);
+  assert.equal(addGraycode(doc), true);
+
+  const t = createTransition(doc, doc.states[0], doc.states[1], 1);
+  assert.equal(t.attributes.find((a) => a.name === 'priority')?.value, '1000');
+  assert.equal(t.attributes.find((a) => a.name === 'graycode')?.value, '');
+
+  const lp = createLoopback(doc, doc.states[0], 0, 0, 1);
+  assert.equal(lp.attributes.find((a) => a.name === 'priority')?.value, '1000');
+  assert.equal(lp.attributes.find((a) => a.name === 'graycode')?.value, '');
+});
+
+// Same defect class for states: a state created after an output was already
+// declared used to be seeded with only its name, missing the output entirely
+// until the next Global Attributes reconcile.
+test('a state created after an output was already declared is seeded with it immediately', () => {
+  const doc = docWithStates([]);
+  const out = addOutput(doc, 'reg');
+  const s = createState(doc, 0, 0, 1);
+  const o = s.attributes.find((a) => a.name === out.name && a.type === 'output');
+  assert.ok(o, 'new state carries the already-declared output');
+  assert.equal(o!.value, out.value, 'seeded at the output\'s current default');
 });
 
 test('addGraycode adds a single global graycode attribute, idempotent', () => {
@@ -253,7 +287,26 @@ test('reconcile: reset ring follows the machine reset_state value', () => {
 // - this test documents why that seeding is required, and that seeding it
 // (reconcileDoc's shape) is what keeps the attribute.
 test('reconcile on a header-less doc wipes a state\'s own name attribute (the bug)', () => {
-  const doc = docWithStates(['A']);
+  // docWithStates([]) alone gives the header-less shape (no stateAttrs); the
+  // state itself is built directly, with its own "name" attribute, matching
+  // what parseFzm produces for a hand-created blank .fzm - the file's own
+  // per-object attribute values are read regardless of whether the global
+  // header sections exist. createState() can no longer stand in here since it
+  // now seeds a new state's attributes from doc.stateAttrs itself (see
+  // updateAttrib in edit.ts's createState) - on an empty global list that
+  // correctly yields no attributes at all, which isn't what this test is
+  // about: it's specifically about reconcile's own separate wiping behavior.
+  const doc = docWithStates([]);
+  doc.states.push({
+    name: 'A', x0: 0, y0: 0, x1: 10, y1: 10, reset: false, page: 1, color: -16777216,
+    attributes: [{
+      name: 'name', nameStatus: 'ABS', value: 'A', valueStatus: 'LOCAL',
+      visibility: 1, visibilityStatus: 'GLOBAL_VAR', type: 'def_type', typeStatus: 'GLOBAL_VAR',
+      comment: '', commentStatus: 'GLOBAL_VAR', color: -16777216, colorStatus: 'GLOBAL_VAR',
+      useratts: '', userattsStatus: 'GLOBAL_VAR', resetval: '', resetvalStatus: 'GLOBAL_VAR',
+      x2Obj: 0, y2Obj: 0, page: -1,
+    }],
+  });
   assert.equal(doc.stateAttrs.length, 0); // no header - what parseFzm('') produces
   assert.ok(hasAttr(doc.states[0].attributes, 'name'));
   reconcileGlobals(doc);

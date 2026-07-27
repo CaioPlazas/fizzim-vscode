@@ -1,6 +1,7 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmText, FzmTransition, ObjAttribute } from '../fzm/model';
 import { Selection } from './hitTest';
 import { createLoopbackGeometry, createStubGeometry, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
+import { updateAttrib } from './globals';
 
 const DEFAULT_STATE_W = 130; // matches DrawArea's default StateW/StateH
 const DEFAULT_STATE_H = 130;
@@ -18,30 +19,6 @@ function nextName(existingNames: string[], prefix: string): string {
     if (Number.isInteger(n) && n > max) max = n;
   }
   return `${prefix}${max + 1}`;
-}
-
-function makeAttribute(name: string, value: string, visibility: number, page: number): ObjAttribute {
-  return {
-    name,
-    nameStatus: 'ABS',
-    value,
-    valueStatus: 'LOCAL',
-    visibility,
-    visibilityStatus: 'GLOBAL_VAR',
-    type: 'def_type',
-    typeStatus: 'GLOBAL_VAR',
-    comment: '',
-    commentStatus: 'GLOBAL_VAR',
-    color: -16777216,
-    colorStatus: 'GLOBAL_VAR',
-    useratts: '',
-    userattsStatus: 'GLOBAL_VAR',
-    resetval: '',
-    resetvalStatus: 'GLOBAL_VAR',
-    x2Obj: 0,
-    y2Obj: 0,
-    page,
-  };
 }
 
 // A brand-new per-object attribute added via the property dialog's "New"
@@ -76,9 +53,14 @@ export function createState(
     reset: false,
     page,
     color,
-    attributes: [makeAttribute('name', name, 1, page)],
+    attributes: [],
   };
   doc.states.push(state);
+  // Seeds every currently-declared state attribute (name, outputs, custom
+  // attrs) onto the new state, mirroring Java's `state.updateAttrib(globalList,
+  // 3)` right after construction - not just on the next Global Attributes
+  // reconcile.
+  updateAttrib(name, state.attributes, doc.stateAttrs, page);
   return state;
 }
 
@@ -114,9 +96,14 @@ export function createLoopback(doc: FzmDocument, state: FzmState, x: number, y: 
     ...geo,
     page,
     color,
-    attributes: [makeAttribute('name', name, 0, page), makeAttribute('equation', '1', 1, page)],
+    attributes: [],
   };
   doc.transitions.push(loopback);
+  // Seeds every currently-declared transition attribute (name, equation,
+  // priority, graycode, custom attrs) onto the new loopback, mirroring Java's
+  // `trans.updateAttrib(globalList, 4)` right after construction - not just on
+  // the next Global Attributes reconcile.
+  updateAttrib(name, loopback.attributes, doc.transAttrs, page);
   return loopback;
 }
 
@@ -143,11 +130,18 @@ export function createTransition(doc: FzmDocument, startState: FzmState, endStat
     pageE: { x: 0, y: 0 },
     pageEC: { x: 0, y: 0 },
     stub: false,
-    attributes: [makeAttribute('name', name, 0, page), makeAttribute('equation', '1', 1, page)],
+    attributes: [],
   };
   // Pushed before seeding geometry: recomputeCrossPage's sibling-stagger offset
   // (crossPageOffset) looks this transition up in doc.transitions by identity.
   doc.transitions.push(transition);
+  // Seeds every currently-declared transition attribute (name, equation,
+  // priority, graycode, custom attrs) onto the new transition, mirroring
+  // Java's `trans.updateAttrib(globalList, 4)` right after construction - not
+  // just on the next Global Attributes reconcile. Otherwise e.g. a priority
+  // already declared via Global Attributes silently wouldn't show up on any
+  // transition created afterward, until Global Attributes was reopened.
+  updateAttrib(name, transition.attributes, doc.transAttrs, page);
   // A transition created between two states that already live on different
   // pages seeds the cross-page connector (pentagon "road sign" docked at the
   // page edge) instead of the same-page bezier - which would otherwise aim at

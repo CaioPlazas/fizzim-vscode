@@ -14,10 +14,19 @@ import {
 import { addOutput } from './globals';
 import { DEFAULT_PREFERENCES, FzmDocument, ObjAttribute } from '../fzm/model';
 
+// A real Fizzim document always has at least the reserved state/trans
+// "name"/"equation" global attributes (defaultDocument() seeds the same) -
+// createState/createTransition seed new objects from these lists, so a doc
+// without them isn't a realistic starting point.
 function emptyDoc(): FzmDocument {
   return {
     version: '14.02.28', versionInt: 140228,
-    machine: [], inputs: [], outputs: [], stateAttrs: [], transAttrs: [],
+    machine: [], inputs: [], outputs: [],
+    stateAttrs: [attr({ name: 'name', nameStatus: 'ABS', value: 'def_name', visibility: 1, type: 'def_type' })],
+    transAttrs: [
+      attr({ name: 'name', nameStatus: 'ABS', value: 'def_name', visibility: 0, type: 'def_type' }),
+      attr({ name: 'equation', nameStatus: 'ABS', value: '1', visibility: 1, type: 'def_type' }),
+    ],
     tabs: ['Page 1'], preferences: { ...DEFAULT_PREFERENCES }, states: [], transitions: [], texts: [],
   };
 }

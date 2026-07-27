@@ -261,7 +261,12 @@ const COPY_STATUS: (keyof ObjAttribute)[] = [
 ];
 
 // Ports GeneralObj.updateAttrib(glist, a) for a single object's attribute list.
-function updateAttrib(objName: string, attrib: ObjAttribute[], global: ObjAttribute[], objPage: number): void {
+// Exported so a freshly created state/transition/loopback can be seeded from
+// the current global list immediately (Java calls this right after `new
+// StateObj(...)`/`new StateTransitionObj(...)`, before the object is ever
+// shown - see createState/createTransition/createLoopback in edit.ts), not
+// just on the next full Global Attributes reconcile.
+export function updateAttrib(objName: string, attrib: ObjAttribute[], global: ObjAttribute[], objPage: number): void {
   for (let i = 0; i < global.length; i++) {
     const g = global[i];
     const l = i < attrib.length ? attrib[i] : null;
