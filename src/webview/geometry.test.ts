@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { createStubGeometry, getBorderPts, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
+import { createStubGeometry, getBorderPts, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
 import { createTransition } from './edit';
 import { DEFAULT_PREFERENCES, FzmDocument, FzmLoopback, FzmState, FzmTransition } from '../fzm/model';
 
@@ -51,6 +51,101 @@ test('recomputeTransition anchors the curve between two states, start left of en
   assert.ok(Number.isFinite(t.endCtrlPt.x) && Number.isFinite(t.endCtrlPt.y));
 });
 
+test('moveTransition preserves a hand-dragged control point when the state moves a small amount', () => {
+  const a = makeState('A', 0, 0, 100, 100);
+  const b = makeState('B', 300, 0, 400, 100);
+  const t: FzmTransition = {
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 0, y: 0 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 0, y: 0 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: false, attributes: [],
+  };
+  recomputeTransition(t, a, b); // seed real geometry, as transition creation does
+
+  // simulate the user hand-dragging the curve into a custom shape
+  t.startCtrlPt = { x: t.startPt.x + 15, y: t.startPt.y - 90 };
+  t.endCtrlPt = { x: t.endPt.x - 40, y: t.endPt.y + 25 };
+  const startOffset = { x: t.startCtrlPt.x - t.startPt.x, y: t.startCtrlPt.y - t.startPt.y };
+  const endOffset = { x: t.endCtrlPt.x - t.endPt.x, y: t.endCtrlPt.y - t.endPt.y };
+  const frozenIndices = { start: t.startStateIndex, end: t.endStateIndex };
+
+  // nudge state A a few px, as a drag or arrow-key press would
+  const moved = makeState('A', 5, 3, 105, 103);
+  moveTransition(t, moved, b);
+
+  assert.deepEqual({ start: t.startStateIndex, end: t.endStateIndex }, frozenIndices, 'border indices stay frozen on a small move');
+  assert.deepEqual(
+    { x: t.startCtrlPt.x - t.startPt.x, y: t.startCtrlPt.y - t.startPt.y },
+    startOffset,
+    'hand-dragged start control point offset is preserved, not reset'
+  );
+  assert.deepEqual(
+    { x: t.endCtrlPt.x - t.endPt.x, y: t.endCtrlPt.y - t.endPt.y },
+    endOffset,
+    'hand-dragged end control point offset is preserved, not reset'
+  );
+});
+
+test('moveTransition survives repeated 1px nudges without resetting the curve (regression: arrow-key nudges used to wipe hand-placed curves)', () => {
+  const a = makeState('A', 0, 0, 100, 100);
+  const b = makeState('B', 300, 0, 400, 100);
+  const t: FzmTransition = {
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 0, y: 0 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 0, y: 0 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: false, attributes: [],
+  };
+  recomputeTransition(t, a, b);
+  t.startCtrlPt = { x: t.startPt.x + 15, y: t.startPt.y - 90 };
+  t.endCtrlPt = { x: t.endPt.x - 40, y: t.endPt.y + 25 };
+  const startOffset = { x: t.startCtrlPt.x - t.startPt.x, y: t.startCtrlPt.y - t.startPt.y };
+  const endOffset = { x: t.endCtrlPt.x - t.endPt.x, y: t.endCtrlPt.y - t.endPt.y };
+
+  let s = a;
+  for (let i = 0; i < 20; i++) {
+    s = makeState('A', s.x0 + 1, s.y0, s.x1 + 1, s.y1); // one arrow-key nudge each
+    moveTransition(t, s, b);
+  }
+
+  assert.deepEqual({ x: t.startCtrlPt.x - t.startPt.x, y: t.startCtrlPt.y - t.startPt.y }, startOffset);
+  assert.deepEqual({ x: t.endCtrlPt.x - t.endPt.x, y: t.endCtrlPt.y - t.endPt.y }, endOffset);
+});
+
+test('moveTransition falls back to a full recompute when the states swap relative sides', () => {
+  const a = makeState('A', 0, 0, 100, 100);
+  const b = makeState('B', 300, 0, 400, 100);
+  const t: FzmTransition = {
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 0, y: 0 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 0, y: 0 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: false, attributes: [],
+  };
+  recomputeTransition(t, a, b);
+  t.startCtrlPt = { x: t.startPt.x + 15, y: t.startPt.y - 90 };
+  t.endCtrlPt = { x: t.endPt.x - 40, y: t.endPt.y + 25 };
+
+  // drag B to the far left of A - a genuine structural change, not a small move
+  const movedB = makeState('B', -500, 0, -400, 100);
+  moveTransition(t, a, movedB);
+
+  const fresh: FzmTransition = {
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 0, y: 0 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 0, y: 0 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: false, attributes: [],
+  };
+  recomputeTransition(fresh, a, movedB);
+
+  assert.deepEqual(t.startPt, fresh.startPt, 'flipped move re-derives geometry via the full recompute path, matching a fresh recompute');
+  assert.deepEqual(t.endPt, fresh.endPt);
+  assert.deepEqual(t.startCtrlPt, fresh.startCtrlPt);
+  assert.deepEqual(t.endCtrlPt, fresh.endCtrlPt);
+});
+
 test('createStubGeometry anchors at border point 0 with the tip 60px to the right', () => {
   const s = makeState('A', 0, 0, 100, 100);
   const geo = createStubGeometry(s);
@@ -75,6 +170,19 @@ test('recomputeStub re-anchors the stub to the moved state, preserving its lengt
   const postLen = Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y);
   assert.ok(Math.abs(postLen - preLen) <= 1, `stub length preserved (${preLen} -> ${postLen})`);
   assert.deepEqual(t.pageS, { x: 360, y: 50 }, 'tip stays 60px to the right after the move');
+});
+
+test('recomputeStub preserves a zero-length stub instead of snapping it to a 60px default', () => {
+  const t: FzmTransition = {
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 100, y: 50 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 100, y: 50 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: true, attributes: [],
+  }; // tip dragged onto its own anchor -> a legitimate zero-length stub
+  const moved = makeState('A', 200, 0, 300, 100);
+  recomputeStub(t, moved);
+  assert.deepEqual(t.pageS, t.startPt, 'zero-length stub stays zero-length after the state moves, not snapped to a 60px default');
 });
 
 test('recomputeLoopback preserves border indices and keeps control points at the same distance from their anchor', () => {

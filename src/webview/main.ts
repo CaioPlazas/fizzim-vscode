@@ -4,7 +4,7 @@ import { parseFzm } from '../fzm/parser';
 import { serializeFzm } from '../fzm/serializer';
 import { AttrLabelTarget, computeBounds, hitAttrLabel, render, transitionOnPage } from './render';
 import { crossPageSide, CurveHandle, hitTest, normRect, objectsInBox, Selection, StateHandle, stateHandleAt, transitionHandleAt } from './hitTest';
-import { nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
+import { moveTransition, nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub } from './geometry';
 import {
   applyAttributeEdits,
   colorIntToHex,
@@ -157,7 +157,7 @@ function updateAttachedTransitions(doc: FzmDocument, movedName: string): void {
         // Cross-page connectors re-dock to the page edge (Java re-runs
         // moveEndPts' cross-page branch whenever an endpoint state moves).
         if (startState.page !== endState.page) recomputeCrossPage(doc, t);
-        else recomputeTransition(t, startState, endState);
+        else moveTransition(t, startState, endState);
       }
     }
   }

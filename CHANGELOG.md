@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.2
+
+Bug fix. No change to the `.fzm` format or the generated Verilog/VHDL.
+
+- **Fixed: a transition's hand-drawn curve could reset to a straight default
+  shape just from moving, resizing, or arrow-key-nudging one of its connected
+  states.** Ordinary state moves now translate the curve with the state
+  instead of fully recomputing it; a full re-route still happens only when
+  the two states' relative position changes enough to warrant it (matching
+  the original Fizzim's own behavior).
+- Fixed: a stub transition dragged to exactly zero length would snap back to
+  a default 60px length the next time its state moved.
+
 ## 1.5.1
 
 Bug fix plus a usability pass on dialog/edit-bar field sizing. No change to the
