@@ -179,7 +179,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
         const def = doc.outputs.find((x) => x.name === o.name)?.value ?? '';
         const inp = textInput(o.value, 5, 20);
         inp.placeholder = def || '0';
-        live(inp, (v) => setStateOutputValue(s, o.name, v));
+        live(inp, (v) => setStateOutputValue(s, o.name, v, doc.stateAttrs));
         parts.push(field(o.name, inp));
       }
     }
@@ -203,7 +203,7 @@ export function buildEditBar(container: HTMLElement, host: EditBarHost): { refre
     parts.push(field('Equation', eq));
 
     const prio = textInput(getPriority(t), 4, 10);
-    live(prio, (v) => setPriority(t, v));
+    live(prio, (v) => setPriority(t, v, doc.transAttrs));
     parts.push(field('Priority', prio));
 
     if (!isLoop) {

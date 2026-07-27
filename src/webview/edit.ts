@@ -1,6 +1,6 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmText, FzmTransition, ObjAttribute } from '../fzm/model';
 import { Selection } from './hitTest';
-import { createLoopbackGeometry, createStubGeometry, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition } from './geometry';
+import { createLoopbackGeometry, createStubGeometry, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition, restaggerCrossPage } from './geometry';
 import { updateAttrib } from './globals';
 
 const DEFAULT_STATE_W = 130; // matches DrawArea's default StateW/StateH
@@ -147,8 +147,14 @@ export function createTransition(doc: FzmDocument, startState: FzmState, endStat
   // page edge) instead of the same-page bezier - which would otherwise aim at
   // (0,0) forever, since startPt/endPt/control points are never touched again
   // until something moves. Mirrors StateTransitionObj.setEndPts' own branch.
-  if (startState.page !== endState.page) recomputeCrossPage(doc, transition);
-  else recomputeTransition(transition, startState, endState);
+  if (startState.page !== endState.page) {
+    recomputeCrossPage(doc, transition);
+    // A new cross-page sibling shifts every other connector sharing either
+    // endpoint's stagger group (DrawArea.initTrans calls pageConnUpdate for
+    // exactly this reason - getOffset's stagger is a rank-out-of-total, so
+    // adding one shifts the rest).
+    restaggerCrossPage(doc, [startState.name, endState.name]);
+  } else recomputeTransition(transition, startState, endState);
   return transition;
 }
 
@@ -199,6 +205,7 @@ export function moveStateToPage(doc: FzmDocument, index: number, newPage: number
   // A normal transition touching the moved state may have just become — or
   // stopped being — cross-page. Re-seed its geometry either way, like Java.
   const byName = new Map(doc.states.map((st) => [st.name, st]));
+  const farEndpoints = new Set<string>();
   for (const t of doc.transitions) {
     if (t.kind === 'loopback') continue;
     if (t.startState !== name && t.endState !== name) continue;
@@ -208,7 +215,13 @@ export function moveStateToPage(doc: FzmDocument, index: number, newPage: number
     repageTransition(t, oldPageOf.get(t.startState)!, oldPageOf.get(t.endState)!, a.page, b.page);
     if (a.page !== b.page) recomputeCrossPage(doc, t);
     else recomputeTransition(t, a, b);
+    farEndpoints.add(t.startState === name ? t.endState : t.startState);
   }
+  // A transition attached to the moved state may have just joined or left a
+  // cross-page sibling group on its OTHER endpoint - that shifts every other
+  // sibling sharing that far endpoint (F10), even though they don't touch the
+  // moved state themselves.
+  restaggerCrossPage(doc, farEndpoints);
 }
 
 // Moves a free-text object to another page (Fizzim's text right-click "Move to
@@ -225,6 +238,18 @@ export function moveTextToPage(doc: FzmDocument, index: number, newPage: number)
 // attribute's own page (Java's decrementPage loops the attribute list too).
 export function deletePage(doc: FzmDocument, pnum: number): void {
   const statePage = new Map(doc.states.map((s) => [s.name, s.page]));
+  // A cross-page transition dying with this page leaves its surviving
+  // sibling's stagger group (on the OTHER endpoint) one short (F10) -
+  // collect those names before removing anything.
+  const otherEndpoints = new Set<string>();
+  for (const t of doc.transitions) {
+    if (t.kind === 'loopback') continue;
+    const sp = statePage.get(t.startState);
+    const ep = statePage.get(t.endState);
+    if (sp === ep) continue; // not cross-page
+    if (sp === pnum && ep !== pnum) otherEndpoints.add(t.endState);
+    else if (ep === pnum && sp !== pnum) otherEndpoints.add(t.startState);
+  }
   doc.transitions = doc.transitions.filter((t) => {
     if (t.kind === 'loopback') return statePage.get(t.state) !== pnum;
     return statePage.get(t.startState) !== pnum && statePage.get(t.endState) !== pnum;
@@ -237,7 +262,17 @@ export function deletePage(doc: FzmDocument, pnum: number): void {
   };
   for (const s of doc.states) { if (s.page > pnum) s.page--; dec(s.attributes); }
   for (const t of doc.transitions) { if (t.page > pnum) t.page--; dec(t.attributes); }
+  // The global table is deliberately kept (unlike DrawArea.removePage, which
+  // deletes it outright) - it carries user positioning, and our "Table"
+  // visibility toggle is a preference, not an object to delete. But it must
+  // not be left on an invalid page: page pnum no longer exists after the
+  // splice above, and the generic `page > pnum` decrement below wouldn't
+  // touch a table that was sitting exactly ON the deleted page (F18).
+  for (const t of doc.texts) {
+    if (t.isGlobalTable && t.page === pnum) t.page = 1;
+  }
   for (const t of doc.texts) if (t.page > pnum) t.page--;
+  restaggerCrossPage(doc, otherEndpoints);
 }
 
 function setAttrValue(attributes: ObjAttribute[], name: string, value: string): void {
@@ -270,12 +305,15 @@ export function hexToColorInt(hex: string): number {
 
 // Sets an output's value for a single state. A non-empty value is a local
 // override (valueStatus LOCAL, matching Java's editable[1]=LOCAL); clearing it
-// reverts to the output's default (GLOBAL_VAR).
-export function setStateOutputValue(state: FzmState, attrName: string, value: string): void {
+// reverts to the output's global default value (GeneralObj.java:127-128),
+// not to an empty string - an empty comb output errors in fizzim.pl, and an
+// empty reg output silently disagreed with the canvas until the next Global
+// Attributes OK. Reuses setAttrCol's existing restore-on-empty logic rather
+// than reimplementing it.
+export function setStateOutputValue(state: FzmState, attrName: string, value: string, stateAttrs: ObjAttribute[]): void {
   const attr = state.attributes.find((a) => a.name === attrName && a.type === 'output');
   if (!attr) return;
-  attr.value = value;
-  attr.valueStatus = value.trim() ? 'LOCAL' : 'GLOBAL_VAR';
+  setAttrCol(attr, 1, value, stateAttrs);
 }
 
 // --- Transition (Mealy) output values ------------------------------------
@@ -393,12 +431,21 @@ export interface AttrRowEdit {
 function setAttrCol(a: ObjAttribute, col: number, value: string | number, globalDefaults: ObjAttribute[]): void {
   if (!attrCellEditable(a, col)) return; // never touch a locked cell
   if (attrColValue(a, col) === value) return; // unchanged - keep its status too
-  // Clearing the Value column reverts to the global default (Java's
-  // updateAttrib restore-on-empty), so e.g. blanking an output uses its default.
-  if (col === 1 && value === '') {
+  // Clearing the Value or Type column reverts to the global default (Java's
+  // restore-on-empty is `col != 2 && value.equals("")` - any column except
+  // Visibility - and GeneralObj.java:129-130 restores a blank Type exactly
+  // like a blank Value). Blanking a transition output row's Type used to set
+  // type = '' permanently, so fizzim.pl's `{type} eq "output"` filter missed
+  // it and that transition's output assignment silently vanished from the HDL.
+  if ((col === 1 || col === 3) && value === '') {
     const g0 = globalDefaults.find((d) => d.name === a.name);
-    a.value = g0 ? g0.value : '';
-    a.valueStatus = 'GLOBAL_VAR';
+    if (col === 1) {
+      a.value = g0 ? g0.value : '';
+      a.valueStatus = 'GLOBAL_VAR';
+    } else {
+      a.type = g0 ? g0.type : '';
+      a.typeStatus = 'GLOBAL_VAR';
+    }
     return;
   }
   switch (col) {
@@ -478,7 +525,18 @@ export function setTransitionStub(doc: FzmDocument, t: FzmTransition | FzmLoopba
   } else {
     const start = doc.states.find((s) => s.name === t.startState);
     const end = doc.states.find((s) => s.name === t.endState);
-    if (start && end) recomputeTransition(t, start, end);
+    if (start && end) {
+      // F8: untick Stub? on a transition whose endpoints ended up on
+      // different pages (Move to Page can do this while stub was still
+      // ticked) - re-dock as a cross-page connector, matching the check
+      // updateAttachedTransitions already applies on every other state move.
+      // Without this, the connector snapped back to a same-page curve
+      // collapsed on top of the state, and nothing in the UI could repair it
+      // (recomputeCrossPage is only reachable again via moveStateToPage /
+      // reconnectTransition).
+      if (start.page !== end.page) recomputeCrossPage(doc, t);
+      else recomputeTransition(t, start, end);
+    }
   }
 }
 
@@ -570,20 +628,19 @@ export function getPriority(t: FzmTransition | FzmLoopback): string {
   return t.attributes.find((a) => a.name === 'priority')?.value ?? '';
 }
 
-export function setPriority(t: FzmTransition | FzmLoopback, value: string): void {
-  const attr = t.attributes.find((a) => a.name === 'priority');
-  if (value.trim()) {
-    if (attr) {
-      attr.value = value;
-      attr.valueStatus = 'LOCAL';
-    } else {
-      // Priority is not type "output"; it's a plain attribute (type '').
-      // visibility 2 matches how Fizzim stores it on transitions.
-      t.attributes.push(makeAttr('priority', value, t.page, '', 2));
-    }
-  } else if (attr) {
-    t.attributes.splice(t.attributes.indexOf(attr), 1);
+// Clearing Priority reverts to its global default (Properties.java's TPDelete
+// explicitly refuses to delete a GLOBAL_FIXED row - Java blanks it back to
+// "1000") rather than deleting the row; reuses setAttrCol's restore logic.
+export function setPriority(t: FzmTransition | FzmLoopback, value: string, transAttrs: ObjAttribute[]): void {
+  let attr = t.attributes.find((a) => a.name === 'priority');
+  if (!attr) {
+    if (!value.trim()) return;
+    // Priority is not type "output"; it's a plain attribute (type '').
+    // visibility 2 matches how Fizzim stores it on transitions.
+    attr = makeAttr('priority', '', t.page, '', 2);
+    t.attributes.push(attr);
   }
+  setAttrCol(attr, 1, value, transAttrs);
 }
 
 // Reconnects a normal transition to (possibly) different start/end states and
@@ -603,8 +660,21 @@ export function reconnectTransition(doc: FzmDocument, index: number, startName: 
   // Reconnecting to a state on another page may make this transition
   // cross-page (or same-page again) - re-seed the right geometry either way,
   // just like a state move (moveStateToPage / StateTransitionObj.setEndPts).
-  if (start.page !== end.page) recomputeCrossPage(doc, t);
-  else recomputeTransition(t, start, end);
+  // F16 + F8: stub wins over cross-page (setEndPts:268-277) - the old code
+  // never checked t.stub here at all, so reconnecting a stub left its tip
+  // (pageS) pointing at wherever the OLD start state used to be, with no way
+  // to repair it from the UI (the property dialog's own follow-up
+  // setTransitionStub call is a no-op since t.stub doesn't change).
+  if (t.stub) {
+    const geo = createStubGeometry(start);
+    t.startStateIndex = geo.startStateIndex;
+    t.startPt = geo.startPt;
+    t.pageS = geo.pageS;
+  } else if (start.page !== end.page) {
+    recomputeCrossPage(doc, t);
+  } else {
+    recomputeTransition(t, start, end);
+  }
   return { ok: true };
 }
 
@@ -634,10 +704,23 @@ export function reconnectLoopback(doc: FzmDocument, index: number, stateName: st
 export function deleteSelection(doc: FzmDocument, selection: Selection): void {
   if (selection.kind === 'state') {
     const state = doc.states[selection.index];
+    // A cross-page transition attached to this state affects its sibling
+    // group on the OTHER endpoint (F10: removing one sibling shifts the
+    // rest) - collect those names before removing anything.
+    const otherEndpoints = new Set<string>();
+    for (const t of doc.transitions) {
+      if (t.kind === 'loopback') continue;
+      if (t.startState === state.name) otherEndpoints.add(t.endState);
+      else if (t.endState === state.name) otherEndpoints.add(t.startState);
+    }
     doc.states.splice(selection.index, 1);
     doc.transitions = doc.transitions.filter((t) => (t.kind === 'loopback' ? t.state !== state.name : t.startState !== state.name && t.endState !== state.name));
+    restaggerCrossPage(doc, otherEndpoints);
   } else if (selection.kind === 'transition') {
+    const t = doc.transitions[selection.index];
+    const endpoints = t.kind === 'loopback' ? [] : [t.startState, t.endState];
     doc.transitions.splice(selection.index, 1);
+    if (endpoints.length) restaggerCrossPage(doc, endpoints);
   } else if (selection.kind === 'text') {
     if (doc.texts[selection.index].isGlobalTable) return; // matches Java's guard against deleting the global table
     doc.texts.splice(selection.index, 1);

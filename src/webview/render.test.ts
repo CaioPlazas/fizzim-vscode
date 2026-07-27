@@ -241,8 +241,9 @@ test('stateAnchor centers horizontally and sits a quarter down; curveAnchor is t
   const doc = emptyDoc();
   const s = createState(doc, 100, 200, 1);
   const a = stateAnchor(s);
-  assert.equal(a.x, s.x0 + (s.x1 - s.x0) / 2);
-  assert.equal(a.y, s.y0 + (s.y1 - s.y0) / 4);
+  // F17: Java's getCenter uses integer division (int x0/x1/y0/y1).
+  assert.equal(a.x, s.x0 + Math.trunc((s.x1 - s.x0) / 2));
+  assert.equal(a.y, s.y0 + Math.trunc((s.y1 - s.y0) / 4));
   const b = createState(doc, 400, 200, 1);
   const t = createTransition(doc, s, b, 1);
   const c = curveAnchor(t);

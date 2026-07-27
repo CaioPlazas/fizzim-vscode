@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.6 — Java-parity audit sweep (pre-release)
+
+Bug fix sweep from a systematic audit against the original Fizzim's Java
+source. No change to the `.fzm` format itself, but several of these fix real
+data-loss / wrong-HDL bugs. Same fix set as stable 1.5.4 — see its changelog
+entry for the full list:
+
+- Mealy outputs surviving a Global Attributes reconcile.
+- Fractional coordinates at non-100% zoom no longer reach the `.fzm` file.
+- Clearing an output's value or a transition's Priority reverts to the
+  declared default instead of blanking/deleting it.
+- A newly declared reset state uses a type compatible with one-hot encoding.
+- Transition curves survive group drags and slow multi-frame drags.
+- Dragging can no longer strand an object permanently off-screen.
+- Same-page "stub" transitions and cross-page connectors no longer conflict.
+- Cross-page connectors re-dock on page-size changes and re-stagger when a
+  sibling connector is added or removed.
+- Several Global Attributes dialog validation gaps closed (Type column
+  restore-on-empty, output-mirror row locking, duplicate/invalid name
+  validation, a rejected rename no longer discarding other pending edits).
+- Dragging a stub's anchor or tip now correctly rotates the arrow outward.
+- Reconnecting a stub transition re-seeds its geometry on the new state.
+- Deleting a page keeps the on-canvas global attributes table on a valid page.
+
 ## 2.0.5 — new-object attribute seeding fix (pre-release)
 
 No change to the `.fzm` format or the generated Verilog/VHDL.

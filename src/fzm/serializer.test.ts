@@ -79,3 +79,35 @@ test('full attribute fields survive a round-trip (comment/color/useratts/resetva
   const eqn2 = doc2.transitions[0].attributes.find((a) => a.name === 'equation');
   assert.deepEqual(eqn2, eqn1);
 });
+
+// F2 guard: Java reads x0/y0/x1/y1, x2Obj/y2Obj, and text x/y as ints
+// (FileParser.java:471-474, :656-664, :375-377) - a fractional value throws
+// NumberFormatException on load in real Fizzim. Dragging at a fractional zoom
+// used to write these raw; the serializer now rounds them as a last-resort
+// guard even though main.ts also rounds at every drag site.
+test('fractional x0/y0/x1/y1/x2Obj/y2Obj/x/y are rounded to whole numbers on write', () => {
+  const doc = defaultDocument();
+  doc.states.push({
+    name: 's0', x0: 10.4, y0: 20.6, x1: 90.5, y1: 60.5, reset: false, page: 1, color: -1,
+    attributes: [{
+      name: 'name', nameStatus: 'ABS', value: 's0', valueStatus: 'LOCAL',
+      visibility: 1, visibilityStatus: 'GLOBAL_VAR', type: '', typeStatus: 'GLOBAL_VAR',
+      comment: '', commentStatus: 'GLOBAL_VAR', color: -16777216, colorStatus: 'GLOBAL_VAR',
+      useratts: '', userattsStatus: 'GLOBAL_VAR', resetval: '', resetvalStatus: 'GLOBAL_VAR',
+      x2Obj: 5.5, y2Obj: 9.4, page: -1,
+    }],
+  });
+  doc.texts.push({ x: 3.5, y: 7.2, page: 1, text: 'hi', isGlobalTable: false });
+  const text = serializeFzm(doc);
+  for (const tag of ['x0', 'y0', 'x1', 'y1', 'x2Obj', 'y2Obj', 'x', 'y']) {
+    const re = new RegExp(`<${tag}>\\n\\s*(-?\\d+(?:\\.\\d+)?)\\n`, 'g');
+    let m;
+    while ((m = re.exec(text))) {
+      assert.equal(m[1].includes('.'), false, `<${tag}> should be a whole number, got "${m[1]}"`);
+    }
+  }
+  const reparsed = parseFzm(text);
+  assert.equal(reparsed.states[0].x0, 10);
+  assert.equal(reparsed.states[0].y0, 21);
+  assert.equal(reparsed.texts.find((t) => !t.isGlobalTable)?.x, 4);
+});

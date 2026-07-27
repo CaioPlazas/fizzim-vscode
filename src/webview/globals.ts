@@ -21,6 +21,28 @@ export function globalList(doc: FzmDocument, index: number): ObjAttribute[] {
   return [doc.machine, doc.inputs, doc.outputs, doc.stateAttrs, doc.transAttrs][index];
 }
 
+const OUTPUT_VALID_TYPES = ['reg', 'comb', 'regdp', 'flag'];
+
+// Ports Properties.java's GPOK validation (:2050-2085), run when Global
+// Attributes OK is pressed: reject on (a) two rows sharing a name within any
+// of the 5 lists, or (b) an output whose type isn't reg/comb/regdp/flag.
+// Returns an error message, or null if the doc is valid.
+export function validateGlobals(doc: FzmDocument): string | null {
+  const lists = [doc.machine, doc.inputs, doc.outputs, doc.stateAttrs, doc.transAttrs];
+  for (let i = 0; i < lists.length; i++) {
+    const list = lists[i];
+    for (let j = 0; j < list.length; j++) {
+      if (i === OUTPUTS && !OUTPUT_VALID_TYPES.includes(list[j].type)) {
+        return 'An output must have a type set';
+      }
+      for (let k = j + 1; k < list.length; k++) {
+        if (list[j].name === list[k].name) return 'Two rows cannot contain the same name';
+      }
+    }
+  }
+  return null;
+}
+
 function makeGlobalAttr(
   name: string,
   value: string,
@@ -52,15 +74,23 @@ function makeGlobalAttr(
   };
 }
 
-function uniqueName(list: ObjAttribute[], base: string): string {
-  if (!list.some((a) => a.name === base)) return base;
+// Checks name uniqueness across every list given, not just the one the new
+// attribute is nominally declared in. Needed for addOutput: an output's name
+// lands in doc.outputs AND (mirrored) in doc.stateAttrs, so a name that's
+// free in doc.outputs but already taken in doc.stateAttrs (e.g. by an
+// existing state user-attribute) would otherwise produce two identically-
+// named rows in stateAttrs - fizzim.pl's name-keyed hash then silently picks
+// one, and updateAttrib's index-then-name matching starts shuffling rows.
+function uniqueName(lists: ObjAttribute[][], base: string): string {
+  const taken = (name: string) => lists.some((list) => list.some((a) => a.name === name));
+  if (!taken(base)) return base;
   let n = 1;
-  while (list.some((a) => a.name === `${base}${n}`)) n++;
+  while (taken(`${base}${n}`)) n++;
   return `${base}${n}`;
 }
 
 export function addInput(doc: FzmDocument, multibit = false): ObjAttribute {
-  const name = uniqueName(doc.inputs, multibit ? 'in[1:0]' : 'in');
+  const name = uniqueName([doc.inputs], multibit ? 'in[1:0]' : 'in');
   const attr = makeGlobalAttr(name, '', 0, '', 'GLOBAL_FIXED');
   doc.inputs.push(attr);
   return attr;
@@ -68,7 +98,8 @@ export function addInput(doc: FzmDocument, multibit = false): ObjAttribute {
 
 export function addOutput(doc: FzmDocument, type: OutputType = 'reg', multibit = false): ObjAttribute {
   const base = type === 'flag' ? 'flag' : multibit ? 'out[1:0]' : 'out';
-  const name = uniqueName(doc.outputs, base);
+  // Checked against both lists the name will actually land in - see uniqueName.
+  const name = uniqueName([doc.outputs, doc.stateAttrs], base);
   const vis = 2; // NONDEFAULT, matching Java's new-output visibility
   const useratts = type === 'flag' ? 'suppress_portlist' : '';
   // Flags can't have default values; other outputs default to "0" so codegen
@@ -97,7 +128,14 @@ export function addReset(doc: FzmDocument): void {
   }
   if (!doc.machine.some((a) => a.name === 'reset_state')) {
     const defaultState = doc.states[0]?.name ?? '';
-    doc.machine.push(makeGlobalAttr('reset_state', defaultState, 0, 'allzeros', 'ABS'));
+    // Java writes the empty string here (Properties.java:1928); 'anyvalue' is
+    // what 87/91 real fizzim-latest/examples files use for this field and,
+    // like Java's '', matches neither 'allzeros' nor 'allones' - fizzim.pl
+    // hard-errors under onehot encoding ("Cannot have reset_state type of
+    // allones or allzeros with onehot encoding") and forces every state bit to
+    // 0 at reset under 'allzeros', which 'allzeros' here silently did for
+    // every newly authored file.
+    doc.machine.push(makeGlobalAttr('reset_state', defaultState, 0, 'anyvalue', 'ABS'));
   }
 }
 
@@ -121,7 +159,7 @@ export function addUserAttribute(doc: FzmDocument, listIndex: number): ObjAttrib
   if (listIndex === INPUTS) return addInput(doc, false);
   if (listIndex === OUTPUTS) return addOutput(doc, 'reg', false);
   const list = globalList(doc, listIndex);
-  const name = uniqueName(list, 'attr');
+  const name = uniqueName([list], 'attr');
   const attr = makeGlobalAttr(name, '', 1, '', 'GLOBAL_FIXED');
   list.push(attr);
   if (listIndex === STATE_ATTRS) {
@@ -140,10 +178,17 @@ export function validateOutputEdit(attr: ObjAttribute, col: number, value: strin
   const type = col === 3 ? value : attr.type;
   const resetval = col === 7 ? value : attr.resetval;
   const defaultVal = col === 1 ? value : attr.value;
-  if (resetval !== '' && type !== 'flag' && type !== 'regdp') {
+  // Gated by the edited column, matching Properties.java:188-210 exactly
+  // (`global && col == 7` / `global && col == 3`, etc.) - without this, a
+  // file that already carries a resetval on a reg/comb output (or any other
+  // pre-existing state these rules wouldn't allow *creating*) fails every
+  // future edit to that row, even ones that don't touch type/value/resetval
+  // at all, since attr.type/attr.resetval never change for an unrelated
+  // column edit.
+  if ((col === 7 || col === 3) && resetval !== '' && type !== 'flag' && type !== 'regdp') {
     return 'Only regdp and flag can have a reset value';
   }
-  if (defaultVal !== '' && type === 'flag') {
+  if ((col === 1 || col === 3) && defaultVal !== '' && type === 'flag') {
     return 'Flags cannot have default values';
   }
   return null;
@@ -192,6 +237,11 @@ export function deleteGlobalAttr(doc: FzmDocument, listIndex: number, index: num
   if (listIndex === OUTPUTS) {
     removeByName(doc.stateAttrs, name);
     for (const s of doc.states) removeByName(s.attributes, name);
+    // Also strip any per-transition Mealy value for this output: it isn't a
+    // declared <trans> global (we don't implement the "Output" button that
+    // would make it one - see updateAttrib's type==='output' guard above), so
+    // nothing else removes it once the underlying output is gone.
+    for (const t of doc.transitions) removeByName(t.attributes, name);
   } else if (listIndex === STATE_ATTRS) {
     for (const s of doc.states) removeByName(s.attributes, name);
   } else if (listIndex === TRANS_ATTRS) {
@@ -213,6 +263,12 @@ export function renameGlobalAttr(doc: FzmDocument, listIndex: number, index: num
   if (isOutputMirror(listIndex, attr)) return { ok: false, error: 'Rename this output in the Outputs tab.' };
   if (!newName) return { ok: false, error: 'Name cannot be empty.' };
   if (list.some((a, i) => i !== index && a.name === newName)) return { ok: false, error: `"${newName}" already exists in this list.` };
+  // An output's rename also lands in doc.stateAttrs (its mirror) - reject if
+  // that would collide with an existing (non-mirror) state attribute there,
+  // the same asymmetry addOutput's uniqueName check above guards against.
+  if (listIndex === OUTPUTS && doc.stateAttrs.some((a) => a.type !== 'output' && a.name === newName)) {
+    return { ok: false, error: `"${newName}" already exists in the States list.` };
+  }
 
   const oldName = attr.name;
   attr.name = newName;
@@ -310,9 +366,15 @@ export function updateAttrib(objName: string, attrib: ObjAttribute[], global: Ob
     }
   }
   // Drop any non-LOCAL attributes that were removed from the global list.
+  // Deliberate divergence from GeneralObj.java: also keep type==='output' rows.
+  // In real Fizzim a transition's Mealy output IS a declared <trans> global (the
+  // Transitions-tab "Output" button we don't implement adds it there), so this
+  // branch never has to prune one. Here, transition outputs are set directly via
+  // the UI without ever being added to transAttrs, so pruning them here would
+  // silently delete every Mealy output the first time this reconcile runs.
   if (attrib.length > global.length) {
     for (let i = attrib.length - 1; i > global.length - 1; i--) {
-      if (attrib[i].nameStatus !== 'LOCAL') attrib.splice(i, 1);
+      if (attrib[i].nameStatus !== 'LOCAL' && attrib[i].type !== 'output') attrib.splice(i, 1);
     }
   }
   // Assign a page to any attribute that doesn't have one yet (Java's

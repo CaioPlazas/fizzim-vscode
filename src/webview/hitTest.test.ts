@@ -1,10 +1,35 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { crossPageHit, normRect, objectsInBox, pointInEllipse, stateHandleAt, transitionHandleAt } from './hitTest';
-import { DEFAULT_PREFERENCES, FzmDocument, FzmState, FzmTransition } from '../fzm/model';
+import { DEFAULT_PREFERENCES, FzmDocument, FzmState, FzmTransition, ObjAttribute } from '../fzm/model';
 
 function state(x0: number, y0: number, x1: number, y1: number): FzmState {
   return { name: 'S', x0, y0, x1, y1, reset: false, page: 1, color: -16777216, attributes: [] };
+}
+
+function globalAttr(name: string, value: string, visibility: number): ObjAttribute {
+  return {
+    name, nameStatus: 'ABS', value, valueStatus: 'GLOBAL_VAR',
+    visibility, visibilityStatus: 'GLOBAL_VAR', type: 'def_type', typeStatus: 'GLOBAL_VAR',
+    comment: '', commentStatus: 'GLOBAL_VAR', color: -16777216, colorStatus: 'GLOBAL_VAR',
+    useratts: '', userattsStatus: 'GLOBAL_VAR', resetval: '', resetvalStatus: 'GLOBAL_VAR',
+    x2Obj: 0, y2Obj: 0, page: -1,
+  };
+}
+
+// A real Fizzim document always has at least the reserved state/trans
+// "name"/"equation" global attributes (defaultDocument() seeds the same) -
+// keeping these non-empty matches the realistic-baseline convention used
+// elsewhere, even though nothing in this file calls createState/
+// createTransition (whose seeding is what makes an empty list a live trap) (F20).
+function globalHeader() {
+  return {
+    machine: [] as ObjAttribute[],
+    inputs: [] as ObjAttribute[],
+    outputs: [] as ObjAttribute[],
+    stateAttrs: [globalAttr('name', 'def_name', 1)],
+    transAttrs: [globalAttr('name', 'def_name', 0), globalAttr('equation', '1', 1)],
+  };
 }
 
 test('normRect orders corners', () => {
@@ -13,7 +38,7 @@ test('normRect orders corners', () => {
 
 test('objectsInBox selects only fully-contained states and text on the page', () => {
   const doc: FzmDocument = {
-    version: '14.02.28', versionInt: 140228, machine: [], inputs: [], outputs: [], stateAttrs: [], transAttrs: [],
+    version: '14.02.28', versionInt: 140228, ...globalHeader(),
     tabs: ['Page 1'], preferences: { ...DEFAULT_PREFERENCES }, states: [], transitions: [], texts: [],
   };
   doc.states.push({ ...state(20, 20, 80, 80), name: 'inside' });
@@ -88,7 +113,7 @@ function crossPageDoc(): { doc: FzmDocument; t: FzmTransition } {
     stub: false, attributes: [],
   };
   const doc: FzmDocument = {
-    version: '14.02.28', versionInt: 140228, machine: [], inputs: [], outputs: [], stateAttrs: [], transAttrs: [],
+    version: '14.02.28', versionInt: 140228, ...globalHeader(),
     tabs: ['Page 1', 'Page 2'], preferences: { ...DEFAULT_PREFERENCES }, states: [a, b], transitions: [t], texts: [],
   };
   return { doc, t };

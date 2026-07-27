@@ -1,10 +1,10 @@
 import { defaultDocument } from '../fzm/model';
-import type { FzmDocument } from '../fzm/model';
+import type { FzmDocument, Point } from '../fzm/model';
 import { parseFzm } from '../fzm/parser';
 import { serializeFzm } from '../fzm/serializer';
 import { attrIsVisible, AttrLabelTarget, computeBounds, hitAttrLabel, render, transitionOnPage } from './render';
 import { connectAnchorAt, crossPageSide, CurveHandle, hitTest, normRect, objectsInBox, Selection, StateHandle, stateHandleAt, transitionHandleAt } from './hitTest';
-import { moveTransition, nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub } from './geometry';
+import { adjustStubAnchor, adjustStubTip, moveTransition, nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub, restaggerCrossPage, translateTransitionOnly, updatePageConnectors } from './geometry';
 import {
   applyAttributeEdits,
   colorIntToHex,
@@ -83,20 +83,24 @@ type DragState =
 // state's border (36 points), control points move freely (like Java's
 // StateTransitionObj.adjustShapeOrPosition).
 function applyCurveHandle(doc: FzmDocument, t: FzmDocument['transitions'][number], handle: CurveHandle, x: number, y: number): void {
-  // Stub: the tip (pageS) moves freely; the anchor re-snaps to the border and
-  // drags the tip with it so the stub keeps its length/direction.
+  const byName = new Map(doc.states.map((s) => [s.name, s]));
+  // Stub: the tip (pageS) moves freely, then the anchor re-derives its
+  // border index/position from the tip's outward angle (F16's adjustStubTip).
   if (handle === 'stubTip') {
-    if (t.kind === 'transition') t.pageS = { x, y };
+    if (t.kind === 'transition') {
+      const st = byName.get(t.startState);
+      if (st) adjustStubTip(t, st, x, y);
+    }
     return;
   }
-  const byName = new Map(doc.states.map((s) => [s.name, s]));
+  // Stub: dragging the anchor re-snaps it to the border, then re-derives the
+  // tip's outward angle from the state's center through the new anchor
+  // (F15's adjustStubAnchor) so the arrow keeps pointing outward instead of
+  // preserving its old absolute direction.
   if (handle === 'start' && t.kind === 'transition' && t.stub) {
     const st = byName.get(t.startState);
     if (!st) return;
-    const { point, index } = nearestBorderPoint(st, x, y);
-    t.pageS = { x: t.pageS.x + (point.x - t.startPt.x), y: t.pageS.y + (point.y - t.startPt.y) };
-    t.startPt = point;
-    t.startStateIndex = index;
+    adjustStubAnchor(t, st, x, y);
     return;
   }
   if (handle === 'startCtrl') {
@@ -139,9 +143,21 @@ function applyCurveHandle(doc: FzmDocument, t: FzmDocument['transitions'][number
   }
 }
 
-function updateAttachedTransitions(doc: FzmDocument, movedName: string): void {
+// `movingNames`, when given, is every state moving together in this drag step
+// (a group drag's members) - when BOTH of a transition's endpoints are in it,
+// Java's moveEndPts never recomputes (StateTransitionObj.java:450's
+// unconditional "or if multiple states selected" override), since the two
+// states' relative geometry doesn't change during a rigid group move.
+// `baselines`, when given, anchors moveTransition's flip check to the
+// transition's position at drag-start rather than the previous mousemove.
+function updateAttachedTransitions(
+  doc: FzmDocument,
+  movedName: string,
+  movingNames?: Set<string>,
+  baselines?: Map<number, { startPt: Point; endPt: Point }>
+): void {
   const byName = new Map(doc.states.map((s) => [s.name, s]));
-  for (const t of doc.transitions) {
+  doc.transitions.forEach((t, i) => {
     if (t.kind === 'loopback') {
       if (t.state === movedName) {
         const state = byName.get(t.state);
@@ -160,10 +176,12 @@ function updateAttachedTransitions(doc: FzmDocument, movedName: string): void {
         // Cross-page connectors re-dock to the page edge (Java re-runs
         // moveEndPts' cross-page branch whenever an endpoint state moves).
         if (startState.page !== endState.page) recomputeCrossPage(doc, t);
-        else moveTransition(t, startState, endState);
+        else if (movingNames && movingNames.has(t.startState) && movingNames.has(t.endState)) {
+          translateTransitionOnly(t, startState, endState);
+        } else moveTransition(t, startState, endState, baselines?.get(i));
       }
     }
-  }
+  });
 }
 
 // Font families offered by the Preferences pickers (nobody remembers font names).
@@ -209,6 +227,20 @@ function main(): void {
   let drag: DragState | null = null;
   let dragMoved = false;
   let nudgeCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  // Snapshot of every transition's startPt/endPt taken once at the start of a
+  // state/resize/group drag (Java's setParentModified(true), called once on
+  // mouse-down) - moveTransition's flip check compares against this frozen
+  // baseline for the whole drag, not the previous mousemove's result, so a
+  // slow drag that gradually crosses a quadrant boundary is still caught.
+  // Keyed by index into doc.transitions. Cleared on mouseup.
+  let dragTransitionBaseline: Map<number, { startPt: Point; endPt: Point }> | null = null;
+
+  const snapshotTransitionBaseline = () => {
+    dragTransitionBaseline = new Map();
+    doc.transitions.forEach((t, i) => {
+      if (t.kind === 'transition') dragTransitionBaseline!.set(i, { startPt: t.startPt, endPt: t.endPt });
+    });
+  };
   let zoom = 1;
   // Panning the view by scrolling #canvas-wrap: space-drag or middle-drag.
   let spaceHeld = false;
@@ -518,7 +550,7 @@ function main(): void {
     if (selection?.kind === 'transition') {
       const sel = doc.transitions[selection.index];
       // A cross-page transition only exposes the four handles on this page.
-      const crossSide = sel.kind === 'transition' && !transitionOnPage(doc, sel, page) ? crossPageSide(doc, sel, page) : null;
+      const crossSide = sel.kind === 'transition' && !sel.stub && !transitionOnPage(doc, sel, page) ? crossPageSide(doc, sel, page) : null;
       return transitionHandleAt(sel, x, y, TOL(), crossSide);
     }
     return null;
@@ -568,6 +600,7 @@ function main(): void {
     const grabbed = handleAt(x, y);
     if (grabbed && selection?.kind === 'state') {
       const s = doc.states[selection.index];
+      snapshotTransitionBaseline();
       drag = { kind: 'resize', index: selection.index, handle: grabbed as StateHandle, startMouseX: x, startMouseY: y, origX0: s.x0, origY0: s.y0, origX1: s.x1, origY1: s.y1 };
       redraw();
       return;
@@ -599,6 +632,7 @@ function main(): void {
         const t = doc.texts[sel.index];
         return { sel, ox: t.x, oy: t.y, ow: 0, oh: 0 };
       });
+      snapshotTransitionBaseline();
       drag = { kind: 'group', startMouseX: x, startMouseY: y, orig };
       redraw();
       return;
@@ -608,6 +642,7 @@ function main(): void {
     selection = hit;
     if (selection && selection.kind === 'state') {
       const s = doc.states[selection.index];
+      snapshotTransitionBaseline();
       drag = { kind: 'state', index: selection.index, startMouseX: x, startMouseY: y, origX0: s.x0, origY0: s.y0, origX1: s.x1, origY1: s.y1 };
     } else if (selection && selection.kind === 'text') {
       const t = doc.texts[selection.index];
@@ -664,7 +699,16 @@ function main(): void {
       return;
     }
     if (!drag) return;
-    const { x, y } = toCanvasCoords(e);
+    const raw = toCanvasCoords(e);
+    // Clamp the cursor to non-negative model coordinates before it reaches any
+    // drag handler (DrawArea.java:735-748 clamps the same way, cursor-side,
+    // before dispatching to an object) - dragging past the top-left otherwise
+    // writes negative coordinates that can never be clicked or marquee-
+    // selected again (only Ctrl+Z recovers it). Deliberately NOT Java's full
+    // [0,maxW]x[0,maxH] clamp: growing the canvas by dragging past the
+    // bottom-right is an intentional feature here (NEXT_STEP.md round 2, STEP
+    // 10), and this branch's pan/zoom relies on being able to do it.
+    const x = Math.max(0, raw.x), y = Math.max(0, raw.y);
     if (drag.kind === 'connect') {
       dragMoved = true;
       drag.to = { x, y };
@@ -682,12 +726,15 @@ function main(): void {
         s.x0 = snap(drag.origX0 + dx, doc.preferences.gridSize);
         s.y0 = snap(drag.origY0 + dy, doc.preferences.gridSize);
       } else {
-        s.x0 = drag.origX0 + dx;
-        s.y0 = drag.origY0 + dy;
+        // Java reads x0/y0 as ints (FileParser.java:471-474); at any zoom !=
+        // 100% dx/dy are fractional, so round here rather than write a value
+        // real Fizzim's parser would choke on.
+        s.x0 = Math.round(drag.origX0 + dx);
+        s.y0 = Math.round(drag.origY0 + dy);
       }
       s.x1 = s.x0 + w;
       s.y1 = s.y0 + h;
-      updateAttachedTransitions(doc, s.name);
+      updateAttachedTransitions(doc, s.name, undefined, dragTransitionBaseline ?? undefined);
     } else if (drag.kind === 'resize') {
       const dx = x - drag.startMouseX, dy = y - drag.startMouseY;
       if (dx !== 0 || dy !== 0) dragMoved = true;
@@ -695,14 +742,14 @@ function main(): void {
       const h = drag.handle;
       // Snap the dragged edges to the grid when it's on, like state moves.
       const g = doc.preferences.gridSize;
-      const sn = (v: number) => (doc.preferences.grid ? snap(v, g) : v);
+      const sn = (v: number) => (doc.preferences.grid ? snap(v, g) : Math.round(v));
       if (h === 'tl' || h === 'bl') s.x0 = sn(drag.origX0 + dx);
       if (h === 'tr' || h === 'br') s.x1 = sn(drag.origX1 + dx);
       if (h === 'tl' || h === 'tr') s.y0 = sn(drag.origY0 + dy);
       if (h === 'bl' || h === 'br') s.y1 = sn(drag.origY1 + dy);
       if (s.x1 <= s.x0) s.x1 = s.x0 + 5;
       if (s.y1 <= s.y0) s.y1 = s.y0 + 5;
-      updateAttachedTransitions(doc, s.name);
+      updateAttachedTransitions(doc, s.name, undefined, dragTransitionBaseline ?? undefined);
     } else if (drag.kind === 'curve') {
       dragMoved = true;
       applyCurveHandle(doc, doc.transitions[drag.index], drag.handle, x, y);
@@ -711,8 +758,10 @@ function main(): void {
       if (dx !== 0 || dy !== 0) dragMoved = true;
       const obj = drag.target.kind === 'state' ? doc.states[drag.target.index] : doc.transitions[drag.target.index];
       const a = obj.attributes[drag.target.attrIndex];
-      a.x2Obj = drag.origX2 + dx;
-      a.y2Obj = drag.origY2 + dy;
+      // x2Obj/y2Obj are ints in Java (FileParser.java:656-664); no grid-snap
+      // path exists for label drags, so always round.
+      a.x2Obj = Math.round(drag.origX2 + dx);
+      a.y2Obj = Math.round(drag.origY2 + dy);
     } else if (drag.kind === 'marquee') {
       dragMoved = true;
       if (marquee) {
@@ -724,10 +773,22 @@ function main(): void {
       if (dx !== 0 || dy !== 0) dragMoved = true;
       // Snap the whole-group delta to the grid so the arrangement moves in grid
       // steps and keeps its relative layout (rather than snapping each object).
+      // Round even without grid snap - x0/y0/x/y are all ints in Java, and
+      // rounding the shared delta once (not each object's origin+delta) keeps
+      // every member's relative offset exact.
       if (doc.preferences.grid) {
         dx = snap(dx, doc.preferences.gridSize);
         dy = snap(dy, doc.preferences.gridSize);
+      } else {
+        dx = Math.round(dx);
+        dy = Math.round(dy);
       }
+      // Every state moving together in this group drag - a transition with
+      // both endpoints in here keeps its geometry rigid (Java's unconditional
+      // "or if multiple states selected" override), never recomputed.
+      const movingNames = new Set(
+        drag.orig.filter((o) => o.sel.kind === 'state').map((o) => doc.states[o.sel.index].name)
+      );
       for (const o of drag.orig) {
         if (o.sel.kind === 'state') {
           const s = doc.states[o.sel.index];
@@ -735,7 +796,7 @@ function main(): void {
           s.y0 = o.oy + dy;
           s.x1 = s.x0 + o.ow;
           s.y1 = s.y0 + o.oh;
-          updateAttachedTransitions(doc, s.name);
+          updateAttachedTransitions(doc, s.name, movingNames, dragTransitionBaseline ?? undefined);
         } else if (o.sel.kind === 'text') {
           const t = doc.texts[o.sel.index];
           t.x = o.ox + dx;
@@ -747,8 +808,9 @@ function main(): void {
       if (dx !== 0 || dy !== 0) dragMoved = true;
       const t = doc.texts[drag.index];
       const g = doc.preferences.gridSize;
-      t.x = doc.preferences.grid ? snap(drag.origX + dx, g) : drag.origX + dx;
-      t.y = doc.preferences.grid ? snap(drag.origY + dy, g) : drag.origY + dy;
+      // x/y are ints in Java (FileParser.java:375-377).
+      t.x = doc.preferences.grid ? snap(drag.origX + dx, g) : Math.round(drag.origX + dx);
+      t.y = doc.preferences.grid ? snap(drag.origY + dy, g) : Math.round(drag.origY + dy);
     }
     scheduleRedraw();
   });
@@ -798,6 +860,7 @@ function main(): void {
     }
     if (drag && dragMoved) commit(); // commit-on-release, like the Java app
     drag = null;
+    dragTransitionBaseline = null;
   });
 
   // A short human description of a selected object, for the delete flash.
@@ -824,11 +887,21 @@ function main(): void {
       const n = group.length;
       const names = new Set(group.filter((g) => g.kind === 'state').map((g) => doc.states[g.index].name));
       const textIdx = group.filter((g) => g.kind === 'text').map((g) => g.index).sort((a, b) => b - a);
+      // A cross-page transition with exactly one endpoint in the deleted
+      // group leaves its sibling group on the OTHER (surviving) endpoint one
+      // short (F10) - collect those names before removing anything.
+      const otherEndpoints = new Set<string>();
+      for (const t of doc.transitions) {
+        if (t.kind === 'loopback') continue;
+        if (names.has(t.startState) && !names.has(t.endState)) otherEndpoints.add(t.endState);
+        else if (names.has(t.endState) && !names.has(t.startState)) otherEndpoints.add(t.startState);
+      }
       doc.states = doc.states.filter((s) => !names.has(s.name));
       doc.transitions = doc.transitions.filter((t) =>
         t.kind === 'loopback' ? !names.has(t.state) : !names.has(t.startState) && !names.has(t.endState)
       );
       for (const i of textIdx) if (!doc.texts[i]?.isGlobalTable) doc.texts.splice(i, 1);
+      restaggerCrossPage(doc, otherEndpoints);
       group = [];
       selection = null;
       hover = null; // indices shifted under it
@@ -860,9 +933,14 @@ function main(): void {
     const nameIdx = s.attributes.findIndex((a) => a.name === 'name');
     void showAttributeDialog('Edit State Properties', s.attributes, extras).then((res) => {
       if (!res) return;
+      // A rejected rename must not discard the rest of this batch of edits
+      // (F14; Java's SPOK only refuses to *close* on a bad name - it never
+      // throws away edits already made). Apply everything else regardless,
+      // and report the rename failure at the end instead of short-circuiting.
+      let renameError: string | undefined;
       if (nameIdx >= 0) {
         const r = renameState(doc, index, res.rows[nameIdx].value);
-        if (!r.ok) return void showMessage(r.error!);
+        if (!r.ok) renameError = r.error;
       }
       applyAttributeEdits(s.attributes, res.rows, doc.stateAttrs);
       // Per-object attribute add/delete (Fizzim SPNew/SPDelete).
@@ -879,6 +957,7 @@ function main(): void {
       redraw();
       commit();
       rebuildEditBar(); // this state's own fields (name, outputs, …) may have just changed
+      if (renameError) void showMessage(renameError);
     });
   };
 
@@ -908,17 +987,22 @@ function main(): void {
     const title = isLoop ? 'Edit Loopback Transition Properties' : 'Edit State Transition Properties';
     void showAttributeDialog(title, rowAttrs, extras).then((res) => {
       if (!res) return;
+      // A rejected rename/reconnect must not discard the rest of this batch
+      // of edits (F14; Java's TPOK only refuses to *close* on a bad name -
+      // it never throws away edits already made). Apply everything else
+      // regardless, and report failures at the end instead of short-circuiting.
+      const errors: string[] = [];
       if (nameIdx >= 0) {
         const rn = renameTransition(doc, index, res.rows[nameIdx].value);
-        if (!rn.ok) return void showMessage(rn.error!);
+        if (!rn.ok) errors.push(rn.error!);
       }
       if (!isLoop) {
         const rc = reconnectTransition(doc, index, String(res.extras.start), String(res.extras.end));
-        if (!rc.ok) return void showMessage(rc.error!);
+        if (!rc.ok) errors.push(rc.error!);
         setTransitionStub(doc, t, Boolean(res.extras.stub));
       } else {
         const rl = reconnectLoopback(doc, index, String(res.extras.state));
-        if (!rl.ok) return void showMessage(rl.error!);
+        if (!rl.ok) errors.push(rl.error!);
       }
       applyAttributeEdits(rowAttrs, res.rows, doc.transAttrs);
       reconcileTransitionOutputs(t, rowAttrs);
@@ -933,6 +1017,7 @@ function main(): void {
       redraw();
       commit();
       rebuildEditBar(); // this transition's own fields may have just changed
+      if (errors.length) void showMessage(errors.join('\n'));
     });
   };
 
@@ -1414,6 +1499,10 @@ function main(): void {
       const w = Number(res.w), h = Number(res.h);
       if (Number.isFinite(w) && w >= 100) p.pageSizeW = Math.round(w);
       if (Number.isFinite(h) && h >= 100) p.pageSizeH = Math.round(h);
+      // Cross-page connectors dock at pageSizeW-50/-70 (geometry.ts) - stale
+      // after any page-size change until some endpoint state happens to move
+      // (F9; DrawArea.setDASize calls updatePageConn on every resize).
+      updatePageConnectors(doc);
       resize();
       redraw();
       commit();
@@ -1426,6 +1515,7 @@ function main(): void {
     const b = computeBounds(doc, page, false);
     doc.preferences.pageSizeW = Math.max(100, Math.round(b.width));
     doc.preferences.pageSizeH = Math.max(100, Math.round(b.height));
+    updatePageConnectors(doc); // F9, same as Page Setup
     syncPageInputs();
     resize();
     redraw();

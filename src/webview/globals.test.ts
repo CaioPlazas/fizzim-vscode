@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { addGraycode, addInput, addOutput, addPriority, addReset, addUserAttribute, deleteGlobalAttr, globalList, hasReset, hasTransAttr, MACHINE, OUTPUTS, reconcileGlobals, renameGlobalAttr, setGlobalAttrField, STATE_ATTRS, TRANS_ATTRS, validateOutputEdit } from './globals';
-import { createLoopback, createState, createTransition, sanitizeLocalOutputTypes } from './edit';
+import { addGraycode, addInput, addOutput, addPriority, addReset, addUserAttribute, deleteGlobalAttr, globalList, hasReset, hasTransAttr, MACHINE, OUTPUTS, reconcileGlobals, renameGlobalAttr, setGlobalAttrField, STATE_ATTRS, TRANS_ATTRS, validateGlobals, validateOutputEdit } from './globals';
+import { createLoopback, createState, createTransition, sanitizeLocalOutputTypes, setTransitionOutputValue } from './edit';
 import { DEFAULT_PREFERENCES, defaultDocument, FzmDocument, ObjAttribute } from '../fzm/model';
 
 function docWithStates(names: string[]): FzmDocument {
@@ -136,6 +136,16 @@ test('addReset adds reset_signal and reset_state pointing at the first state, id
   assert.equal(rs!.value, 'IDLE');
 });
 
+// F5: 'allzeros' pins every state bit at reset (fizzim.pl:475-484) and is
+// outright rejected under onehot encoding; 'anyvalue' (what 87/91 real
+// fizzim-latest/examples files use) matches neither, like Java's own ''.
+test('addReset declares reset_state type "anyvalue", not "allzeros" (F5)', () => {
+  const doc = docWithStates(['IDLE']);
+  addReset(doc);
+  const rs = doc.machine.find((a) => a.name === 'reset_state');
+  assert.equal(rs!.type, 'anyvalue');
+});
+
 test('protected (ABS) attributes cannot be renamed or deleted', () => {
   const doc = docWithStates([]);
   addReset(doc); // reset_signal/reset_state are ABS
@@ -182,6 +192,57 @@ test('an output shown in the States list cannot be deleted from there', () => {
   deleteGlobalAttr(doc, STATE_ATTRS, idx); // should be a no-op
   assert.ok(hasAttr(doc.stateAttrs, out.name));
   assert.ok(hasAttr(doc.states[0].attributes, out.name));
+});
+
+// F13: addOutput's name-uniqueness check used to look only at doc.outputs,
+// but the mirror it creates lands in doc.stateAttrs - so an output could be
+// auto-named the same as an existing state user-attribute, producing two
+// identically-named rows in doc.stateAttrs.
+test('addOutput avoids clashing with an existing state user-attribute of the same base name', () => {
+  const doc = docWithStates(['A']);
+  const userAttr = addUserAttribute(doc, STATE_ATTRS);
+  userAttr.name = 'out'; // simulate a state user-attribute literally named "out"
+
+  const out = addOutput(doc, 'reg'); // would otherwise also be named "out"
+  assert.notEqual(out.name, 'out', 'the output must not collide with the existing "out" state attribute');
+  assert.equal(doc.stateAttrs.filter((a) => a.name === out.name).length, 1);
+});
+
+// Same asymmetry for renaming: renameGlobalAttr(OUTPUTS, ...) used to check
+// uniqueness only within doc.outputs, not the mirror's destination.
+test('renameGlobalAttr refuses to rename an output to a name an existing state user-attribute already has', () => {
+  const doc = docWithStates(['A']);
+  const userAttr = addUserAttribute(doc, STATE_ATTRS);
+  userAttr.name = 'taken';
+  const out = addOutput(doc, 'reg');
+
+  const idx = doc.outputs.findIndex((a) => a.name === out.name);
+  const r = renameGlobalAttr(doc, OUTPUTS, idx, 'taken');
+  assert.equal(r.ok, false);
+  assert.ok(hasAttr(doc.stateAttrs, out.name), 'the output keeps its original name');
+});
+
+// --- validateGlobals (Properties.java's GPOK validation) ------------------
+
+test('validateGlobals rejects two rows sharing a name within the same list', () => {
+  const doc = docWithStates(['A']);
+  addUserAttribute(doc, STATE_ATTRS).name = 'dup';
+  addUserAttribute(doc, STATE_ATTRS).name = 'dup';
+  assert.equal(validateGlobals(doc), 'Two rows cannot contain the same name');
+});
+
+test('validateGlobals rejects an output whose type is not reg/comb/regdp/flag', () => {
+  const doc = docWithStates(['A']);
+  const out = addOutput(doc, 'reg');
+  out.type = ''; // blanked, e.g. via F11's restore-on-empty landing on ''
+  assert.equal(validateGlobals(doc), 'An output must have a type set');
+});
+
+test('validateGlobals passes a well-formed doc', () => {
+  const doc = docWithStates(['A', 'B']);
+  addOutput(doc, 'comb');
+  addPriority(doc);
+  assert.equal(validateGlobals(doc), null);
 });
 
 // --- reconcileGlobals (GeneralObj.updateAttrib port) ----------------------
@@ -277,6 +338,38 @@ test('reconcile: reset ring follows the machine reset_state value', () => {
   assert.equal(doc.states.find((s) => s.name === 'B')?.reset, true);
 });
 
+// F1 regression: a Mealy output set directly on a transition (never added to
+// doc.transAttrs, since we don't implement the Transitions-tab "Output"
+// button) used to get silently spliced out by the trailing-prune loop in
+// updateAttrib the next time reconcileGlobals ran - e.g. every time Global
+// Attributes is opened and OK'd for any reason. The output's type==='output'
+// marker must protect it from that prune, same as a LOCAL attribute.
+test('reconcile: a Mealy output value set on a transition survives reconcileGlobals', () => {
+  const doc = reconcileDoc(['A', 'B']);
+  const t = createTransition(doc, doc.states[0], doc.states[1], 1);
+  const out = addOutput(doc, 'reg');
+  setTransitionOutputValue(t, out.name, '1');
+  assert.equal(getTransOutput(t, out.name)?.value, '1');
+  reconcileGlobals(doc);
+  const survived = getTransOutput(t, out.name);
+  assert.ok(survived, 'the Mealy output attribute must survive reconcile');
+  assert.equal(survived!.value, '1');
+});
+
+test('reconcile: a globally-deleted output IS removed from a transition that drove it', () => {
+  const doc = reconcileDoc(['A', 'B']);
+  const t = createTransition(doc, doc.states[0], doc.states[1], 1);
+  const out = addOutput(doc, 'reg');
+  setTransitionOutputValue(t, out.name, '1');
+  deleteGlobalAttr(doc, OUTPUTS, doc.outputs.findIndex((a) => a.name === out.name));
+  reconcileGlobals(doc);
+  assert.ok(!getTransOutput(t, out.name), 'deleteGlobalAttr already cascades to transitions explicitly');
+});
+
+function getTransOutput(t: { attributes: ObjAttribute[] }, name: string): ObjAttribute | undefined {
+  return t.attributes.find((a) => a.name === name && a.type === 'output');
+}
+
 // Root-cause regression for "everything disappears after adding an output":
 // a hand-created blank .fzm (docWithStates's shape - no machine/state/trans
 // attribute headers, exactly what parseFzm('') produces) has shorter global
@@ -344,6 +437,34 @@ test('validateOutputEdit: flags cannot have default values', () => {
   // Switching an output with a default to flag is rejected.
   const reg = addOutput(doc, 'reg'); // default "0"
   assert.ok(validateOutputEdit(reg, 3, 'flag'));
+});
+
+// Regression: the two cross-field rules must be gated by which column is
+// actually being edited (Properties.java:188-210's `global && col == 7` /
+// `global && col == 3` etc.) - otherwise a pre-existing inconsistent state
+// (a reg/comb output that already carries a resetval, or a flag that already
+// carries a default) rejects *every* future edit to that row forever, even
+// ones that don't touch type/value/resetval at all.
+test('validateOutputEdit only fires the reset-value rule on cols 3/7, not unrelated edits', () => {
+  const doc = reconcileDoc(['A']);
+  const out = addOutput(doc, 'reg');
+  out.resetval = '3'; // pre-existing inconsistent state (shouldn't normally arise, but do occur in real files)
+  // Editing an unrelated column (comment) must not be blocked by the stale resetval.
+  assert.equal(validateOutputEdit(out, 4, 'a note'), null);
+  assert.equal(validateOutputEdit(out, 1, '0'), null);
+  // Editing col 3 (type) or col 7 (resetval) themselves still enforce the rule.
+  assert.ok(validateOutputEdit(out, 3, 'comb'));
+});
+
+test('validateOutputEdit only fires the flag-default rule on cols 1/3, not unrelated edits', () => {
+  const doc = reconcileDoc(['A']);
+  const out = addOutput(doc, 'flag');
+  out.value = '1'; // pre-existing inconsistent state
+  // Editing an unrelated column must not be blocked by the stale default.
+  assert.equal(validateOutputEdit(out, 4, 'a note'), null);
+  assert.equal(validateOutputEdit(out, 7, ''), null);
+  // Editing col 1 (value) or col 3 (type) themselves still enforce the rule.
+  assert.ok(validateOutputEdit(out, 1, '2'));
 });
 
 test('hasReset reflects reset_signal + reset_state presence', () => {
