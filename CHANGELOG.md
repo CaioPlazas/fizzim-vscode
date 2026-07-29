@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.5
+
+- **Fixed: editing any field in a transition's Properties dialog (equation,
+  priority, color, name, ...) could reset its geometry** — a stub's
+  hand-dragged tip snapped back to its default position, and an ordinary
+  transition's hand-shaped curve was recomputed from scratch, even though
+  only an unrelated field was changed.
+
 ## 1.5.4
 
 Bug fix sweep from a systematic audit against the original Fizzim's Java

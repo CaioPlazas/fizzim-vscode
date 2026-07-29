@@ -649,6 +649,12 @@ export function reconnectTransition(doc: FzmDocument, index: number, startName: 
   if (startName === endName) return { ok: false, error: 'Start and end states must differ.' };
   const t = doc.transitions[index];
   if (t.kind !== 'transition') return { ok: false, error: 'Not a state transition.' };
+  // Properties dialog OK always calls this, even when Start/End weren't
+  // touched (they default to the current endpoints) - without this guard
+  // every edit (equation, priority, color, ...) would fall through to the
+  // geometry branch below and reset a hand-dragged curve or stub tip back
+  // to its default, mirroring reconnectLoopback's existing no-op guard.
+  if (startName === t.startState && endName === t.endState) return { ok: true };
   const start = doc.states.find((s) => s.name === startName);
   const end = doc.states.find((s) => s.name === endName);
   if (!start || !end) return { ok: false, error: 'Unknown state.' };
