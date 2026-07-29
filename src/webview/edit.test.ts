@@ -630,6 +630,43 @@ test('reconnectTransition re-seeds stub geometry on the new start state, not the
   assert.equal(t.pageS.x, t.startPt.x + 60, 'tip re-seeded 60px to the right of the new anchor');
 });
 
+// Properties dialog OK calls reconnectTransition unconditionally with the
+// dropdowns' current values, even when the user only edited an unrelated
+// field (equation, priority, ...). Without a no-op guard this silently
+// re-seeded a stub's hand-dragged tip - or an ordinary transition's
+// hand-dragged curve - back to its default geometry on every such edit.
+test('reconnectTransition with unchanged start/end leaves a hand-dragged stub tip untouched', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+  if (t.kind !== 'transition') throw new Error('expected a normal transition');
+  setTransitionStub(doc, t, true);
+  t.pageS = { x: 12345, y: 6789 }; // simulate the user having dragged the tip elsewhere
+  const draggedPt = { ...t.pageS };
+
+  const r = reconnectTransition(doc, doc.transitions.indexOf(t), t.startState, t.endState);
+  assert.equal(r.ok, true);
+  assert.deepEqual(t.pageS, draggedPt, 'a no-op reconnect must not reseed the stub tip back to its default');
+});
+
+test('reconnectTransition with unchanged start/end leaves a hand-dragged curve untouched', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+  if (t.kind !== 'transition') throw new Error('expected a normal transition');
+  t.startCtrlPt = { x: 111, y: 222 }; // simulate the user having dragged the curve
+  t.endCtrlPt = { x: 333, y: 444 };
+  const draggedStart = { ...t.startCtrlPt };
+  const draggedEnd = { ...t.endCtrlPt };
+
+  const r = reconnectTransition(doc, doc.transitions.indexOf(t), t.startState, t.endState);
+  assert.equal(r.ok, true);
+  assert.deepEqual(t.startCtrlPt, draggedStart, 'a no-op reconnect must not recompute the curve control points');
+  assert.deepEqual(t.endCtrlPt, draggedEnd, 'a no-op reconnect must not recompute the curve control points');
+});
+
 test("moveStateToPage keeps a normal transition's page tracking its start state's page", () => {
   const doc = emptyDoc();
   doc.tabs = ['Page 1', 'Page 2'];
