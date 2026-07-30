@@ -588,6 +588,14 @@ export function resizeState(doc: FzmDocument, index: number, width: number, heig
   const s = doc.states[index];
   const w = Math.max(10, Math.round(width));
   const h = Math.max(10, Math.round(height));
+  // The State Properties dialog OK always calls this, even when Width/Height
+  // weren't touched (they default to the current size) - without this guard a
+  // pure equation/color/attribute edit would still run the re-route loop
+  // below, and its cross-page branch (recomputeCrossPage) is not
+  // delta-preserving: it re-docks pageS/pageSC/pageE/pageEC from the
+  // sibling-stagger formula, discarding a hand-dragged connector. Same no-op
+  // guard as reconnectTransition/reconnectLoopback.
+  if (w === s.x1 - s.x0 && h === s.y1 - s.y0) return;
   s.x1 = s.x0 + w;
   s.y1 = s.y0 + h;
   const byName = new Map(doc.states.map((st) => [st.name, st]));
