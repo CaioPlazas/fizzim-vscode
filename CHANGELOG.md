@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.6
+
+- **Fixed: opening a state's Properties dialog and clicking OK without
+  changing Width/Height (e.g. after only editing its color or an attribute)
+  could still snap a hand-dragged cross-page connector back to its default
+  docked position.** Same underlying issue as 1.5.5, in `resizeState`'s
+  cross-page branch.
+- **Fixed: Page Setup and Fit to Drawing re-docked every cross-page
+  connector even when the page size hadn't actually changed**, discarding
+  any hand-dragged connector position.
+
 ## 1.5.5
 
 - **Fixed: editing any field in a transition's Properties dialog (equation,

@@ -276,6 +276,34 @@ test('resizeState changes size keeping the top-left and reroutes transitions', (
   assert.notDeepEqual(t.kind === 'transition' ? { ...t.startPt } : {}, before);
 });
 
+// State Properties dialog OK calls resizeState unconditionally with the
+// Width/Height fields' current values, even when the user only edited an
+// unrelated field (name, color, an attribute). Without a no-op guard the
+// re-route loop still ran, and its cross-page branch (recomputeCrossPage) is
+// NOT delta-preserving - it re-docks the page-edge handles from the
+// sibling-stagger formula, throwing away a hand-dragged connector.
+test('resizeState with an unchanged size leaves a hand-dragged cross-page connector untouched', () => {
+  const doc = emptyDoc();
+  doc.tabs = ['Page 1', 'Page 2'];
+  const a = createState(doc, 100, 100, 1);
+  const b = createState(doc, 400, 100, 1);
+  const t = createTransition(doc, a, b, 1);
+  if (t.kind !== 'transition') throw new Error('expected a normal transition');
+  moveStateToPage(doc, 1, 2); // b -> page 2, so the transition is now cross-page
+  // Simulate the user having dragged the page-edge handles somewhere else.
+  t.pageS = { x: 1111, y: 2222 };
+  t.pageSC = { x: 3333, y: 4444 };
+  t.pageE = { x: 5555, y: 6666 };
+  t.pageEC = { x: 7777, y: 8888 };
+  const dragged = { pageS: { ...t.pageS }, pageSC: { ...t.pageSC }, pageE: { ...t.pageE }, pageEC: { ...t.pageEC } };
+
+  resizeState(doc, 0, a.x1 - a.x0, a.y1 - a.y0); // same size the dialog would default to
+  assert.deepEqual(t.pageS, dragged.pageS, 'a no-op resize must not re-dock the connector');
+  assert.deepEqual(t.pageSC, dragged.pageSC, 'a no-op resize must not re-dock the connector');
+  assert.deepEqual(t.pageE, dragged.pageE, 'a no-op resize must not re-dock the connector');
+  assert.deepEqual(t.pageEC, dragged.pageEC, 'a no-op resize must not re-dock the connector');
+});
+
 test('setTransitionOutputValue adds a type="output" attr on demand and removes it when cleared', () => {
   const doc = emptyDoc();
   const a = createState(doc, 0, 0, 1);

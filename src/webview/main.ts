@@ -1273,13 +1273,19 @@ function main(): void {
       { kind: 'text', key: 'h', label: 'Page height (px)', value: String(p.pageSizeH) },
     ]).then((res) => {
       if (!res) return;
+      // Snapshot before applying: the dialog's fields default to the CURRENT
+      // page size, so OK-ing it after editing nothing at all must not re-dock
+      // anything (updatePageConnectors has no notion of an old value - it just
+      // re-derives every cross-page connector from scratch, discarding
+      // hand-dragged page-edge handles). Guard at the call site.
+      const oldW = p.pageSizeW, oldH = p.pageSizeH;
       const w = Number(res.w), h = Number(res.h);
       if (Number.isFinite(w) && w >= 100) p.pageSizeW = Math.round(w);
       if (Number.isFinite(h) && h >= 100) p.pageSizeH = Math.round(h);
       // Cross-page connectors dock at pageSizeW-50/-70 (geometry.ts) - stale
       // after any page-size change until some endpoint state happens to move
       // (F9; DrawArea.setDASize calls updatePageConn on every resize).
-      updatePageConnectors(doc);
+      if (p.pageSizeW !== oldW || p.pageSizeH !== oldH) updatePageConnectors(doc);
       resize();
       redraw();
       commit();
@@ -1339,9 +1345,15 @@ function main(): void {
     // Measure content alone (floorToPage=false): flooring at the current page
     // size would make each click grow the page by the bounds margin.
     const b = computeBounds(doc, page, false);
+    const oldW = doc.preferences.pageSizeW, oldH = doc.preferences.pageSizeH;
     doc.preferences.pageSizeW = Math.max(100, Math.round(b.width));
     doc.preferences.pageSizeH = Math.max(100, Math.round(b.height));
-    updatePageConnectors(doc); // F9, same as Page Setup
+    // Same no-op guard as Page Setup: clicking Fit Page twice in a row (the
+    // second click is a no-op resize) must not re-dock hand-placed cross-page
+    // connectors.
+    if (doc.preferences.pageSizeW !== oldW || doc.preferences.pageSizeH !== oldH) {
+      updatePageConnectors(doc); // F9, same as Page Setup
+    }
     syncPageInputs();
     resize();
     redraw();
