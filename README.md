@@ -11,6 +11,16 @@ extension is a from-scratch reimplementation of its diagram editor as a VS Code
 custom editor, reading and writing the exact same `.fzm` file format, so it's a
 drop-in replacement for the desktop GUI.
 
+## Release vs pre-release
+
+Two channels, same `.fzm` files — switch whenever you like from the extension's
+page in VS Code.
+
+- **Release (1.x)** — the stable build, and what you get by default.
+- **Pre-release (2.x)** — adds canvas panning, zoom-to-cursor, drag-to-connect
+  and a properties edit bar. Click **Switch to Pre-Release Version** to try it,
+  or **Switch to Release Version** to go back.
+
 ## Features
 
 - **Diagram editor**: states, transitions, self-loops (loopbacks), free text,
