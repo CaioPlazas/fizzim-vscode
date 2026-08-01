@@ -20,6 +20,7 @@ import {
   setPriority,
   snap,
   moveStateToPage,
+  moveStatesToPage,
   moveTextToPage,
   reconnectLoopback,
   newLocalAttribute,
@@ -367,6 +368,58 @@ test('moveStateToPage moves the state, its attributes, and its loopbacks', () =>
   assert.equal(doc.states[0].attributes.every((at) => at.page === 2), true);
   const loop = doc.transitions.find((t) => t.kind === 'loopback')!;
   assert.equal(loop.page, 2);
+});
+
+// Moving a multi-selection to another page used to call moveStateToPage once
+// per state, so a transition between two selected states looked cross-page for
+// one iteration - long enough to be re-docked as a page connector - and was
+// then rebuilt from scratch as a default bezier on the next. The group never
+// came apart, so its internal geometry should be untouched: Java re-pages every
+// selected object first and only then runs one transition pass
+// (DrawArea.java:1154-1172), whose same-page branch deliberately skips
+// updateObj (StateTransitionObj.java:1130-1142).
+test('moveStatesToPage keeps the curve of a transition whose endpoints both move', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+  // Hand-shape the curve, as dragging its control points would.
+  t.startCtrlPt = { x: t.startPt.x + 15, y: t.startPt.y - 90 };
+  t.endCtrlPt = { x: t.endPt.x - 40, y: t.endPt.y + 25 };
+  const shape = {
+    startPt: { ...t.startPt }, endPt: { ...t.endPt },
+    startCtrlPt: { ...t.startCtrlPt }, endCtrlPt: { ...t.endCtrlPt },
+    startStateIndex: t.startStateIndex, endStateIndex: t.endStateIndex,
+  };
+
+  moveStatesToPage(doc, [0, 1], 2);
+
+  assert.equal(doc.states[0].page, 2);
+  assert.equal(doc.states[1].page, 2);
+  assert.equal(t.page, 2, 'the transition follows its states');
+  assert.equal(t.attributes.every((at) => at.page === 2), true, 'so do its labels');
+  assert.deepEqual(
+    {
+      startPt: t.startPt, endPt: t.endPt, startCtrlPt: t.startCtrlPt, endCtrlPt: t.endCtrlPt,
+      startStateIndex: t.startStateIndex, endStateIndex: t.endStateIndex,
+    },
+    shape,
+    'geometry is untouched - the group moved rigidly'
+  );
+});
+
+test('moveStatesToPage still docks a transition left behind on the old page', () => {
+  const doc = emptyDoc();
+  const a = createState(doc, 0, 0, 1);
+  const b = createState(doc, 300, 0, 1);
+  const t = createTransition(doc, a, b, 1);
+
+  moveStatesToPage(doc, [0], 2); // only A moves, so the transition goes cross-page
+
+  assert.equal(doc.states[0].page, 2);
+  assert.equal(doc.states[1].page, 1);
+  assert.equal(t.pageS.x, doc.preferences.pageSizeW - 50, 'seeded as a page connector');
+  assert.equal(t.pageE.x, 50);
 });
 
 test('newLocalAttribute is fully-editable (all LOCAL) and visible by default', () => {

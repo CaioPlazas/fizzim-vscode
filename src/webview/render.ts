@@ -8,6 +8,17 @@ const GRID_DOT_PX = 1.5;
 const ARROW_LENGTH = 13;
 const ARROW_ANGLE = Math.PI / 6; // 30 degrees, matches StateTransitionObj's arrowhead
 const HANDLE_SIZE = 7;
+// HANDLE_SIZE in model units at the current zoom, i.e. always 7 screen px.
+export function handleSize(): number {
+  return HANDLE_SIZE / renderZoom;
+}
+
+// The zoom the canvas was last drawn at. hitTest.ts uses it to keep pick
+// tolerances a constant number of SCREEN pixels, the same way it already
+// depends on this module's font state to measure label boxes.
+export function currentZoom(): number {
+  return renderZoom;
+}
 
 // The font stack the canvas uses when the .fzm asks for "Arial" - which is what
 // every file written by the Java tool says, since it was Swing's default rather
@@ -58,6 +69,13 @@ function colorToCss(rgb: number): string {
 let theme: Theme = makeTheme('paper');
 let lineW = 1;
 let hover: Selection | null = null;
+// Zoom at the last render(). Handles are drawn in model units under a zoom-scaled
+// transform, so a fixed size would grow with zoom while main.ts's grab tolerance
+// (TOL() = 6/zoom) stays a constant number of screen pixels - at 400% the handle
+// looked 28px wide but only its middle 6px could be grabbed, and at 25% it drew
+// too small to aim at. Dividing by this keeps the drawn handle the same size on
+// screen at every zoom, so what you see is what you can grab.
+let renderZoom = 1;
 // A state's name is the object's title; its outputs are supporting detail. The
 // weight difference is what gives a state a reading order at a glance.
 let NAME_FONT = `600 11px ${UI_FONT_STACK}`;
@@ -600,13 +618,14 @@ function drawCurve(ctx: CanvasRenderingContext2D, t: FzmTransition | FzmLoopback
 // rather than Swing's solid red square: it reads as "handle" instead of "error",
 // and the light interior keeps it visible over a dark shape.
 function drawHandle(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-  const h = HANDLE_SIZE / 2;
+  const size = handleSize();
+  const h = size / 2;
   ctx.beginPath();
-  ctx.roundRect(x - h, y - h, HANDLE_SIZE, HANDLE_SIZE, 2);
+  ctx.roundRect(x - h, y - h, size, size, 2 / renderZoom);
   ctx.fillStyle = theme.handleFill;
   ctx.fill();
   ctx.strokeStyle = theme.accent;
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 1.5 / renderZoom;
   ctx.stroke();
 }
 
@@ -704,6 +723,7 @@ export function render(
   // Model units -> device pixels. The buffer is zoom x dpr times the model size,
   // so drawing in model coordinates under this transform puts every stroke on a
   // real device pixel instead of a CSS pixel that then gets resampled.
+  renderZoom = opts.zoom || 1;
   const scale = opts.zoom * (opts.dpr ?? 1);
 
   // Paint the surface over the whole (device-pixel) canvas, then draw everything

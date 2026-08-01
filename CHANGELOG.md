@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.0.9 — dragging & moving fixes (pre-release)
+
+Same fix set as stable 1.5.7, plus one that only affects this line.
+
+- **Stub arrows no longer shrink while you drag a state.** The longer the drag,
+  the more length they lost — a slow drag across the page could shrink one away
+  to nothing. Stubs now keep their exact length and angle however far you move
+  the state, matching the original Fizzim.
+- **Cross-page connectors no longer collapse against the right page edge.** The
+  pentagon "road sign" used to stay welded to the edge while the state kept
+  going, squashing the connector flat. It now travels with the state and simply
+  runs off the page; **Page Setup** or **Fit to Drawing** docks it back.
+- **Moving a multi-selection to another page keeps its transition curves.** Any
+  transition between two selected states used to be rebuilt from scratch, and
+  its labels were left behind on the old page.
+- **Arrow keys work after Ctrl+A.** They nudge the whole selection instead of
+  doing nothing.
+- **Dragging a group past the top-left corner can't lose states off-canvas**
+  any more, where they couldn't be clicked or selected again.
+- **The canvas now grows as soon as you drop a dragged object**, instead of
+  jumping the next time you zoomed or switched pages.
+- **Selection handles grab where they're drawn at any zoom.** Zoomed in they
+  drew far larger than their clickable area; zoomed out, too small to hit.
+- **No more dead zone around a state's connect anchor** (pre-release only),
+  where the cursor said "connect" but pressing dragged the state instead.
+
 ## 2.0.8 — cross-page connector geometry-reset fix (pre-release)
 
 - **Fixed: opening a state's Properties dialog and clicking OK without

@@ -233,21 +233,48 @@ export function createLoopbackGeometry(
 // it at border point 0 (the state's rightmost point) with the tip 60px to the
 // right (StateTransitionObj.setEndPts, the `stub` branch: startPt =
 // startBorderPts.get(0); pageS = startPt+(60,0); len=60; angle=0).
-export function createStubGeometry(state: FzmState): { startStateIndex: number; startPt: Point; pageS: Point } {
+export function createStubGeometry(
+  state: FzmState
+): { startStateIndex: number; startPt: Point; pageS: Point; stubLen: number; stubAngle: number } {
   const borderPts = getBorderPts(state);
   const startPt = borderPts[0];
-  return { startStateIndex: 0, startPt, pageS: { x: startPt.x + 60, y: startPt.y } };
+  return { startStateIndex: 0, startPt, pageS: { x: startPt.x + 60, y: startPt.y }, stubLen: 60, stubAngle: 0 };
+}
+
+// Java keeps a stub's length and outward angle in the `len`/`angle` fields and
+// only ever rewrites them from a handle drag; on load it derives them once
+// (StateTransitionObj.java:175-179). This mirrors that one-time derivation for
+// a transition that came straight out of the parser (or predates these fields).
+//
+// Java derives the angle as getAngle(startPt, realCenter) - the outward
+// direction through the anchor - rather than from the anchor->tip vector we use
+// here. The two agree within the 36-point border quantization, since every
+// handle drag re-snaps the anchor to the border point facing the tip, but using
+// the anchor->tip vector keeps an already-saved stub pixel-identical instead of
+// snapping its tip onto the nearest radial the first time its state moves.
+function ensureStubLenAngle(t: FzmTransition): void {
+  if (t.stubLen !== undefined && t.stubAngle !== undefined) return;
+  t.stubAngle = getAngle(t.pageS, t.startPt);
+  t.stubLen = Math.round(Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y));
 }
 
 // Re-anchors a stub when its start state moves/resizes: startPt snaps back to
 // its border point and the tip (pageS) follows, preserving the stub's length
-// and outward angle (StateTransitionObj.moveEndPts, `stub` branch, which keeps
-// the stored angle/len - we derive them from the current startPt->pageS vector,
-// which holds the pre-move values when this runs).
+// and outward angle (StateTransitionObj.moveEndPts, `stub` branch, :443-444).
+//
+// The stored len/angle are load-bearing, not a cache. This used to re-derive
+// both from the current startPt->pageS vector on every call, but pageS is
+// Math.trunc'd on the way out, so each call fed a slightly-shortened vector
+// back into the next one. A drag fires this once per mousemove event (~60/s),
+// and the error does NOT converge: a 10-degree stub lost ~1px per event and a
+// 60-degree one grew, so dragging a group across the page visibly shrank (or
+// stretched) every stub on it. Java has no such drift because it never
+// re-derives.
 export function recomputeStub(t: FzmTransition, startState: FzmState): void {
   const borderPts = getBorderPts(startState);
-  const angle = getAngle(t.pageS, t.startPt);
-  const len = Math.round(Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y));
+  ensureStubLenAngle(t);
+  const angle = t.stubAngle!;
+  const len = t.stubLen!;
   t.startPt = borderPts[t.startStateIndex] ?? borderPts[0];
   t.pageS = { x: Math.trunc(t.startPt.x + len * Math.cos(angle)), y: Math.trunc(t.startPt.y - len * Math.sin(angle)) };
 }
@@ -262,10 +289,13 @@ export function recomputeStub(t: FzmTransition, startState: FzmState): void {
 // pointing straight through the state body instead of rotating outward.
 export function adjustStubAnchor(t: FzmTransition, startState: FzmState, x: number, y: number): void {
   const { point, index } = nearestBorderPoint(startState, x, y);
-  const len = Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y);
+  ensureStubLenAngle(t);
+  const len = t.stubLen!;
   t.startPt = point;
   t.startStateIndex = index;
+  // Java's START branch rewrites `angle` and leaves `len` alone (:662-666).
   const angle = getAngle(point, realCenter(startState));
+  t.stubAngle = angle;
   t.pageS = { x: Math.trunc(point.x + len * Math.cos(angle)), y: Math.trunc(point.y - len * Math.sin(angle)) };
 }
 
@@ -282,6 +312,10 @@ export function adjustStubTip(t: FzmTransition, startState: FzmState, x: number,
   if (index > 35) index -= 36;
   t.startStateIndex = index;
   t.startPt = getBorderPts(startState)[index];
+  // Java's PAGES branch rewrites both fields (:693-703), measuring the new
+  // length from the re-snapped anchor rather than from the raw drag point.
+  t.stubAngle = angle;
+  t.stubLen = Math.trunc(Math.hypot(t.pageS.x - t.startPt.x, t.pageS.y - t.startPt.y));
 }
 
 // Re-anchors a loopback when its state moves/resizes. Java's updateObj
@@ -334,11 +368,49 @@ function crossPageOffset(doc: FzmDocument, t: FzmTransition, side: 'start' | 'en
   return (numb - avg) * 40;
 }
 
+// Moves a cross-page connector rigidly with the state(s) that just moved:
+// each side's anchor, control point and page-edge points shift by the same
+// delta that side's border anchor did - the delta-translate technique
+// recomputeLoopback and translateTransition already use.
+//
+// Java instead re-docks (recomputeCrossPage, below) on every state move, and
+// that IS what StateTransitionObj.moveEndPts does. It is invisible there only
+// because Java's canvas is hard-bounded to the page: FizzimGui.java:1491-1494
+// sizes DrawArea to exactly maxW x maxH, DrawArea.mouseDragged:738-748 clamps
+// the cursor into it, and moveOnResize drags objects back in when the page
+// shrinks - so a state can never travel far from the page edge the connector
+// is pinned to. This port deliberately dropped that clamp (NEXT_STEP.md round
+// 2, STEP 10: growing the canvas by dragging past the edge is a feature), which
+// turned the re-dock into a visible defect - drag a group toward the right
+// border and the pentagon stayed welded to pageSizeW-50 while its anchor kept
+// going, collapsing the connector to nothing and then inverting it. Translating
+// instead also stops a plain state move from discarding a hand-dragged
+// connector shape. A full re-dock still runs on every genuine topology change
+// (create, reconnect, page move, sibling re-stagger) and on any page-size
+// change via updatePageConnectors - so Page Setup / Fit Page re-docks it.
+export function translateCrossPage(t: FzmTransition, startState: FzmState, endState: FzmState): void {
+  const newStartPt = getBorderPts(startState)[t.startStateIndex];
+  const newEndPt = getBorderPts(endState)[t.endStateIndex];
+  if (!newStartPt || !newEndPt) return;
+
+  const sdx = newStartPt.x - t.startPt.x, sdy = newStartPt.y - t.startPt.y;
+  const edx = newEndPt.x - t.endPt.x, edy = newEndPt.y - t.endPt.y;
+
+  t.startCtrlPt = { x: t.startCtrlPt.x + sdx, y: t.startCtrlPt.y + sdy };
+  t.pageS = { x: t.pageS.x + sdx, y: t.pageS.y + sdy };
+  t.pageSC = { x: t.pageSC.x + sdx, y: t.pageSC.y + sdy };
+  t.startPt = newStartPt;
+
+  t.endCtrlPt = { x: t.endCtrlPt.x + edx, y: t.endCtrlPt.y + edy };
+  t.pageE = { x: t.pageE.x + edx, y: t.pageE.y + edy };
+  t.pageEC = { x: t.pageEC.x + edx, y: t.pageEC.y + edy };
+  t.endPt = newEndPt;
+}
+
 // Seeds/re-docks a cross-page transition's connector geometry, porting
 // StateTransitionObj.moveEndPts (cross-page branch) + DrawArea.getOffset.
-// Java re-runs this whenever an endpoint state moves or changes page, so a
-// hand-dragged connector re-docks to the page edge on state move — that is
-// faithful, keep it.
+// Called on genuine topology changes only - see translateCrossPage above for
+// why a plain state move translates instead of re-docking here.
 export function recomputeCrossPage(doc: FzmDocument, t: FzmTransition): void {
   const startState = doc.states.find((s) => s.name === t.startState);
   const endState = doc.states.find((s) => s.name === t.endState);

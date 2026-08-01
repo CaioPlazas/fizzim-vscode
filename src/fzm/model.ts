@@ -55,6 +55,15 @@ export interface FzmTransition {
   pageE: Point;
   pageEC: Point;
   stub: boolean;
+  // Java's StateTransitionObj.len/angle, only meaningful while `stub` is set.
+  // Java derives them ONCE when a file loads (StateTransitionObj.java:175-179)
+  // and thereafter only rewrites them when the user drags a stub handle;
+  // moveEndPts' stub branch (:443-444) rebuilds pageS from these stored values,
+  // which is what makes a Java stub keep its exact length across any number of
+  // state moves. Deliberately NOT serialized - Java doesn't persist them
+  // either, so they are re-derived on the next parse (see recomputeStub).
+  stubLen?: number;
+  stubAngle?: number;
   attributes: ObjAttribute[];
 }
 
