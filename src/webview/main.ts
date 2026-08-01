@@ -4,7 +4,7 @@ import { parseFzm } from '../fzm/parser';
 import { serializeFzm } from '../fzm/serializer';
 import { AttrLabelTarget, computeBounds, hitAttrLabel, render, transitionOnPage } from './render';
 import { crossPageSide, CurveHandle, hitTest, normRect, objectsInBox, Selection, StateHandle, stateHandleAt, transitionHandleAt } from './hitTest';
-import { adjustStubAnchor, adjustStubTip, moveTransition, nearestBorderPoint, recomputeCrossPage, recomputeLoopback, recomputeStub, restaggerCrossPage, translateTransitionOnly, updatePageConnectors } from './geometry';
+import { adjustStubAnchor, adjustStubTip, moveTransition, nearestBorderPoint, recomputeLoopback, recomputeStub, restaggerCrossPage, translateCrossPage, translateTransitionOnly, updatePageConnectors } from './geometry';
 import {
   applyAttributeEdits,
   colorIntToHex,
@@ -16,7 +16,7 @@ import {
   deleteSelection,
   duplicateState,
   hexToColorInt,
-  moveStateToPage,
+  moveStatesToPage,
   moveTextToPage,
   reconcileTransitionOutputs,
   reconnectLoopback,
@@ -80,6 +80,13 @@ type DragState =
 // state's border (36 points), control points move freely (like Java's
 // StateTransitionObj.adjustShapeOrPosition).
 function applyCurveHandle(doc: FzmDocument, t: FzmDocument['transitions'][number], handle: CurveHandle, x: number, y: number): void {
+  // Every other drag site rounds (F2): these points are ints in Java's reader,
+  // and at any zoom != 100% toCanvasCoords hands back fractions. The serializer
+  // rounds on write, so the file was never at risk - but the live document
+  // differed from the same document saved and reloaded, and the fractions fed
+  // the stub's stored length/angle, which is now load-bearing geometry.
+  x = Math.round(x);
+  y = Math.round(y);
   const byName = new Map(doc.states.map((s) => [s.name, s]));
   // Stub: the tip (pageS) moves freely, then the anchor re-derives its
   // border index/position from the tip's outward angle (F16's adjustStubTip).
@@ -140,6 +147,19 @@ function applyCurveHandle(doc: FzmDocument, t: FzmDocument['transitions'][number
   }
 }
 
+// Applies a "Move to <page>" to a whole selection in one go. Every state goes
+// through moveStatesToPage together, so a transition between two of them is
+// never seen as half-moved and keeps its hand-drawn curve; free text has no
+// cascade and just changes page.
+function moveSelectionToPage(doc: FzmDocument, movers: Selection[], targetPage: number): void {
+  const stateIndices: number[] = [];
+  for (const m of movers) {
+    if (m.kind === 'state') stateIndices.push(m.index);
+    else if (m.kind === 'text') moveTextToPage(doc, m.index, targetPage);
+  }
+  if (stateIndices.length > 0) moveStatesToPage(doc, stateIndices, targetPage);
+}
+
 // `movingNames`, when given, is every state moving together in this drag step
 // (a group drag's members) - when BOTH of a transition's endpoints are in it,
 // Java's moveEndPts never recomputes (StateTransitionObj.java:450's
@@ -170,9 +190,10 @@ function updateAttachedTransitions(
       const startState = byName.get(t.startState);
       const endState = byName.get(t.endState);
       if (startState && endState) {
-        // Cross-page connectors re-dock to the page edge (Java re-runs
-        // moveEndPts' cross-page branch whenever an endpoint state moves).
-        if (startState.page !== endState.page) recomputeCrossPage(doc, t);
+        // Cross-page connectors travel with the state that moved instead of
+        // re-docking to the page edge; see translateCrossPage's comment for
+        // why this one spot departs from Java's moveEndPts.
+        if (startState.page !== endState.page) translateCrossPage(t, startState, endState);
         else if (movingNames && movingNames.has(t.startState) && movingNames.has(t.endState)) {
           translateTransitionOnly(t, startState, endState);
         } else moveTransition(t, startState, endState, baselines?.get(i));
@@ -655,6 +676,16 @@ function main(): void {
         dx = Math.round(dx);
         dy = Math.round(dy);
       }
+      // The cursor clamp above stops the grab POINT at 0, which is all a single
+      // object needs. A group shares one delta, so members to the left of the
+      // grab point would still be pushed negative - and computeBounds only ever
+      // grows toward +x/+y, so anything there becomes unclickable and
+      // unmarqueeable, recoverable only with Ctrl+Z. Java can't hit this: its
+      // drag is delta-driven off the already-clamped cursor, so the whole group
+      // simply stops. Clamp the shared delta against the group's own drag-start
+      // bounding box to get the same effect.
+      dx = Math.max(dx, -Math.min(...drag.orig.map((o) => o.ox)));
+      dy = Math.max(dy, -Math.min(...drag.orig.map((o) => o.oy)));
       // Every state moving together in this group drag - a transition with
       // both endpoints in here keeps its geometry rigid (Java's unconditional
       // "or if multiple states selected" override), never recomputed.
@@ -699,7 +730,17 @@ function main(): void {
       redraw();
       return;
     }
-    if (drag && dragMoved) commit(); // commit-on-release, like the Java app
+    if (drag && dragMoved) {
+      // Grow (or shrink) the drawing surface to match where things ended up.
+      // Without this, dragging an object past the current extent left it
+      // unreachable until some unrelated action - a zoom, a page switch -
+      // happened to call resize() and made the canvas jump. This does NOT move
+      // the page: computeBounds still floors at pageSizeW/H, so an object
+      // dragged past the page edge still reads as off-page until Page Setup /
+      // Fit Page says otherwise.
+      resize();
+      commit(); // commit-on-release, like the Java app
+    }
     drag = null;
     dragTransitionBaseline = null;
   });
@@ -901,10 +942,7 @@ function main(): void {
             label: `Move to ${tabName || `Page ${targetPage}`}`,
             action: () => {
               const movers = group.filter((g) => g.kind === 'state' || g.kind === 'text');
-              for (const m of movers) {
-                if (m.kind === 'state') moveStateToPage(doc, m.index, targetPage);
-                else if (m.kind === 'text') moveTextToPage(doc, m.index, targetPage);
-              }
+              moveSelectionToPage(doc, movers, targetPage);
               selection = null;
               group = [];
               redraw();
@@ -1017,10 +1055,7 @@ function main(): void {
             // A multi-select group moves states and free text together (Java
             // moves object types 0 and 3); a lone state moves by itself.
             const movers = group.length > 0 && inGroup(hit) ? group.filter((g) => g.kind === 'state' || g.kind === 'text') : [hit];
-            for (const m of movers) {
-              if (m.kind === 'state') moveStateToPage(doc, m.index, targetPage);
-              else if (m.kind === 'text') moveTextToPage(doc, m.index, targetPage);
-            }
+            moveSelectionToPage(doc, movers, targetPage);
             selection = null;
             group = [];
             redraw();
@@ -1055,10 +1090,7 @@ function main(): void {
           label: `Move to ${tabName || `Page ${targetPage}`}`,
           action: () => {
             const movers = group.length > 0 && inGroup(hit) ? group.filter((g) => g.kind === 'state' || g.kind === 'text') : [hit];
-            for (const m of movers) {
-              if (m.kind === 'state') moveStateToPage(doc, m.index, targetPage);
-              else if (m.kind === 'text') moveTextToPage(doc, m.index, targetPage);
-            }
+            moveSelectionToPage(doc, movers, targetPage);
             selection = null;
             group = [];
             redraw();
@@ -1081,19 +1113,53 @@ function main(): void {
     const nudge: Record<string, [number, number]> = {
       ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
     };
-    if (!inField && selection?.kind === 'state' && nudge[e.key]) {
+    // Nudges the whole multi-selection when there is one (Ctrl+A then arrow
+    // used to do nothing at all), otherwise the single selected state.
+    const nudgeTargets: Selection[] =
+      group.length > 0 ? group : selection?.kind === 'state' ? [selection] : [];
+    if (!inField && nudgeTargets.length > 0 && nudge[e.key]) {
       e.preventDefault();
       const step = e.shiftKey ? doc.preferences.gridSize : 1;
       const [ux, uy] = nudge[e.key];
-      const s = doc.states[selection.index];
-      s.x0 += ux * step; s.y0 += uy * step; s.x1 += ux * step; s.y1 += uy * step;
-      updateAttachedTransitions(doc, s.name);
-      redraw();
+      const dx = ux * step, dy = uy * step;
+      // Same top-left guard as a drag: never walk an object into negative
+      // coordinates, which computeBounds can't grow the canvas into.
+      const minX = Math.min(...nudgeTargets.map((t) => (t.kind === 'state' ? doc.states[t.index].x0 : t.kind === 'text' ? doc.texts[t.index].x : Infinity)));
+      const minY = Math.min(...nudgeTargets.map((t) => (t.kind === 'state' ? doc.states[t.index].y0 : t.kind === 'text' ? doc.texts[t.index].y : Infinity)));
+      const ndx = Number.isFinite(minX) ? Math.max(dx, -minX) : dx;
+      const ndy = Number.isFinite(minY) ? Math.max(dy, -minY) : dy;
+      if (ndx !== 0 || ndy !== 0) {
+        // One baseline per burst, not per keypress: moveTransition's +-20px
+        // flip check has to measure from where the run started, or 40 separate
+        // 1px nudges never trip a recompute that one 40px drag would. The
+        // commit debounce below defines the burst, so the baseline is taken
+        // when the timer isn't already running and cleared when it fires.
+        if (!nudgeCommitTimer) snapshotTransitionBaseline();
+        const movingNames = new Set(
+          nudgeTargets.filter((t) => t.kind === 'state').map((t) => doc.states[t.index].name)
+        );
+        for (const t of nudgeTargets) {
+          if (t.kind === 'state') {
+            const s = doc.states[t.index];
+            s.x0 += ndx; s.y0 += ndy; s.x1 += ndx; s.y1 += ndy;
+            updateAttachedTransitions(doc, s.name, movingNames, dragTransitionBaseline ?? undefined);
+          } else if (t.kind === 'text') {
+            doc.texts[t.index].x += ndx;
+            doc.texts[t.index].y += ndy;
+          }
+        }
+        resize(); // the canvas has to follow, same as after a drag
+        redraw();
+      }
       // Debounce the commit so holding an arrow key (which can repeat at
       // >100Hz) doesn't serialize+round-trip the whole document, and create
       // an undo step, on every single pixel of movement.
       if (nudgeCommitTimer) clearTimeout(nudgeCommitTimer);
-      nudgeCommitTimer = setTimeout(() => { nudgeCommitTimer = null; commit(); }, 300);
+      nudgeCommitTimer = setTimeout(() => {
+        nudgeCommitTimer = null;
+        dragTransitionBaseline = null;
+        commit();
+      }, 300);
       return;
     }
 

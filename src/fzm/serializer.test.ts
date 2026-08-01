@@ -111,3 +111,28 @@ test('fractional x0/y0/x1/y1/x2Obj/y2Obj/x/y are rounded to whole numbers on wri
   assert.equal(reparsed.states[0].y0, 21);
   assert.equal(reparsed.texts.find((t) => !t.isGlobalTable)?.x, 4);
 });
+
+// stubLen/stubAngle are working geometry state, not file format: Java keeps the
+// equivalent len/angle fields in memory and re-derives them on load, and .fzm
+// has no tags for them. If they ever reached the writer, every file we touched
+// would gain tags real Fizzim's positional reader would mis-read as something
+// else entirely.
+test('a stub\'s cached length/angle never reach the serialized file', () => {
+  const doc = defaultDocument();
+  doc.states.push({ name: 'A', x0: 0, y0: 0, x1: 100, y1: 100, reset: false, page: 1, color: -16777216, attributes: [] });
+  doc.states.push({ name: 'B', x0: 300, y0: 0, x1: 400, y1: 100, reset: false, page: 1, color: -16777216, attributes: [] });
+  doc.transitions.push({
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 100, y: 50 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 160, y: 50 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: true, stubLen: 60, stubAngle: 1.234, attributes: [],
+  });
+  const text = serializeFzm(doc);
+  assert.equal(/stubLen|stubAngle|1\.234/i.test(text), false, 'no stub cache tags in the .fzm');
+  const reparsed = parseFzm(text);
+  const t = reparsed.transitions[0];
+  assert.equal(t.kind, 'transition');
+  assert.equal((t as { stubLen?: number }).stubLen, undefined, 'and nothing to read back - it re-derives');
+  assert.equal((t as { stubAngle?: number }).stubAngle, undefined);
+});

@@ -1,5 +1,5 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmTransition, Point } from '../fzm/model';
-import { pentagonOrigin, sameStub, textBounds, transitionOnPage } from './render';
+import { currentZoom, pentagonOrigin, sameStub, textBounds, transitionOnPage } from './render';
 
 function distToSegment(px: number, py: number, a: Point, b: Point): number {
   const dx = b.x - a.x;
@@ -15,7 +15,13 @@ export type Selection =
   | { kind: 'transition'; index: number }
   | { kind: 'text'; index: number };
 
-const CURVE_HIT_WIDTH = 10; // matches StateTransitionObj's 10px stroked-shape hit test
+// Matches StateTransitionObj's 10px stroked-shape hit test. Java has no zoom, so
+// its 10 is both model units and screen pixels; here they diverge, and a pick
+// tolerance that shrinks on screen as you zoom out is the wrong half of that
+// trade - dividing by the zoom keeps curves 10 screen px wide to aim at, and
+// reduces to Java's exact number at 100%.
+const CURVE_HIT_PX = 10;
+const curveHitWidth = () => CURVE_HIT_PX / currentZoom();
 
 export function pointInEllipse(x: number, y: number, cx: number, cy: number, rx: number, ry: number): boolean {
   if (rx <= 0 || ry <= 0) return false;
@@ -103,7 +109,7 @@ export function crossPageHit(doc: FzmDocument, t: FzmTransition, page: number, x
   let prev = bezierPoint(p0, p1, p2, p3, 0);
   for (let i = 1; i <= STEPS; i++) {
     const cur = bezierPoint(p0, p1, p2, p3, i / STEPS);
-    if (distToSegment(x, y, prev, cur) <= CURVE_HIT_WIDTH / 2) return true;
+    if (distToSegment(x, y, prev, cur) <= curveHitWidth() / 2) return true;
     prev = cur;
   }
   const o = pentagonOrigin(t, side);
@@ -167,7 +173,7 @@ export function hitTest(ctx: CanvasRenderingContext2D, doc: FzmDocument, page: n
     if (t.kind === 'transition' && t.stub) {
       if (statePage.get(t.startState) === page) {
         const { pt, tip } = sameStub(t);
-        if (distToSegment(x, y, pt, tip) <= CURVE_HIT_WIDTH / 2) return { kind: 'transition', index: i };
+        if (distToSegment(x, y, pt, tip) <= curveHitWidth() / 2) return { kind: 'transition', index: i };
       }
       continue;
     }
@@ -175,7 +181,7 @@ export function hitTest(ctx: CanvasRenderingContext2D, doc: FzmDocument, page: n
       const path = new Path2D();
       path.moveTo(t.startPt.x, t.startPt.y);
       path.bezierCurveTo(t.startCtrlPt.x, t.startCtrlPt.y, t.endCtrlPt.x, t.endCtrlPt.y, t.endPt.x, t.endPt.y);
-      ctx.lineWidth = CURVE_HIT_WIDTH;
+      ctx.lineWidth = curveHitWidth();
       if (ctx.isPointInStroke(path, x, y)) return { kind: 'transition', index: i };
     } else if (t.kind === 'transition') {
       // Cross-page: hit-test this page's bezier + pentagon connector.

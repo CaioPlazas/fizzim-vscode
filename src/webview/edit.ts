@@ -1,6 +1,6 @@
 import { FzmDocument, FzmLoopback, FzmState, FzmText, FzmTransition, ObjAttribute } from '../fzm/model';
 import { Selection } from './hitTest';
-import { createLoopbackGeometry, createStubGeometry, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition, restaggerCrossPage } from './geometry';
+import { createLoopbackGeometry, createStubGeometry, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition, restaggerCrossPage, translateCrossPage } from './geometry';
 import { updateAttrib } from './globals';
 
 const DEFAULT_STATE_W = 130; // matches DrawArea's default StateW/StateH
@@ -182,46 +182,79 @@ function repageTransition(t: FzmTransition, oldStartPage: number, oldEndPage: nu
   if (newStartPage !== newEndPage && oldStartPage === oldEndPage) {
     for (const a of t.attributes) a.page = newStartPage;
   }
+  // Both endpoints travelled together to a new page: the transition was never
+  // cross-page, so none of the branches above apply, but every label still has
+  // to follow. This is Java's updateObjPages same-page branch, which sets every
+  // attribute's page and myPage = sPage = ePage in one go
+  // (StateTransitionObj.java:1130-1142). Only reachable now that a group page
+  // move re-pages all its states at once; the old per-state loop made the
+  // transition look transiently cross-page, so the branch above covered for it.
+  if (newStartPage === newEndPage && oldStartPage === oldEndPage && newStartPage !== oldStartPage) {
+    for (const a of t.attributes) a.page = newStartPage;
+  }
   t.page = newStartPage;
 }
 
-// Moves a state (and its attributes + attached loopbacks) to another page.
-// Normal transitions to states still on other pages become cross-page and are
-// simply not drawn until both endpoints share a page again.
-export function moveStateToPage(doc: FzmDocument, index: number, newPage: number): void {
-  const s = doc.states[index];
-  const name = s.name;
+// Moves one or more states (with their attributes + attached loopbacks) to
+// another page. Normal transitions to states still on other pages become
+// cross-page and are simply not drawn until both endpoints share a page again.
+//
+// Every selected state is re-paged FIRST, then the transition cascade runs
+// once over the finished arrangement - the order Java uses for a multi-select
+// page move (DrawArea.java:1154-1172: a setPage loop, then a single
+// updateObjPages pass). Doing it state-by-state instead made a transition
+// between two selected states look cross-page for one iteration, which
+// re-docked it as a connector and destroyed its hand-drawn curve; the second
+// iteration then rebuilt it from scratch as a fresh same-page bezier. The
+// group never actually came apart, so nothing should have been recomputed.
+export function moveStatesToPage(doc: FzmDocument, indices: number[], newPage: number): void {
   // Pre-move snapshot of every state's page, so the re-page cascade below can
   // tell what each attached transition's endpoints' pages *were*.
   const oldPageOf = new Map(doc.states.map((st) => [st.name, st.page]));
-  s.page = newPage;
-  for (const a of s.attributes) a.page = newPage;
+  const movedNames = new Set<string>();
+  for (const index of indices) {
+    const s = doc.states[index];
+    if (!s) continue;
+    movedNames.add(s.name);
+    s.page = newPage;
+    for (const a of s.attributes) a.page = newPage;
+  }
+  if (movedNames.size === 0) return;
   for (const t of doc.transitions) {
-    if (t.kind === 'loopback' && t.state === name) {
+    if (t.kind === 'loopback' && movedNames.has(t.state)) {
       t.page = newPage;
       for (const a of t.attributes) a.page = newPage;
     }
   }
-  // A normal transition touching the moved state may have just become — or
-  // stopped being — cross-page. Re-seed its geometry either way, like Java.
+  // A normal transition touching any moved state may have just become - or
+  // stopped being - cross-page. Re-seed its geometry either way, like Java.
   const byName = new Map(doc.states.map((st) => [st.name, st]));
   const farEndpoints = new Set<string>();
   for (const t of doc.transitions) {
     if (t.kind === 'loopback') continue;
-    if (t.startState !== name && t.endState !== name) continue;
+    if (!movedNames.has(t.startState) && !movedNames.has(t.endState)) continue;
     const a = byName.get(t.startState);
     const b = byName.get(t.endState);
     if (!a || !b) continue;
+    const wasCrossPage = oldPageOf.get(t.startState) !== oldPageOf.get(t.endState);
     repageTransition(t, oldPageOf.get(t.startState)!, oldPageOf.get(t.endState)!, a.page, b.page);
     if (a.page !== b.page) recomputeCrossPage(doc, t);
-    else recomputeTransition(t, a, b);
-    farEndpoints.add(t.startState === name ? t.endState : t.startState);
+    else if (wasCrossPage) recomputeTransition(t, a, b); // was a connector; needs a real curve again
+    // else: both endpoints travelled together and are still on one page, so the
+    // curve between them is untouched - Java's updateObjPages re-pages the
+    // labels and pointedly leaves updateObj() commented out for this case
+    // (StateTransitionObj.java:1130-1142).
+    farEndpoints.add(movedNames.has(t.startState) ? t.endState : t.startState);
   }
-  // A transition attached to the moved state may have just joined or left a
+  // A transition attached to a moved state may have just joined or left a
   // cross-page sibling group on its OTHER endpoint - that shifts every other
-  // sibling sharing that far endpoint (F10), even though they don't touch the
+  // sibling sharing that far endpoint (F10), even though they don't touch a
   // moved state themselves.
   restaggerCrossPage(doc, farEndpoints);
+}
+
+export function moveStateToPage(doc: FzmDocument, index: number, newPage: number): void {
+  moveStatesToPage(doc, [index], newPage);
 }
 
 // Moves a free-text object to another page (Fizzim's text right-click "Move to
@@ -521,8 +554,15 @@ export function setTransitionStub(doc: FzmDocument, t: FzmTransition | FzmLoopba
       t.startStateIndex = geo.startStateIndex;
       t.startPt = geo.startPt;
       t.pageS = geo.pageS;
+      t.stubLen = geo.stubLen;
+      t.stubAngle = geo.stubAngle;
     }
   } else {
+    // Not a stub any more, so the stored len/angle no longer describe anything.
+    // Leaving them set would resurrect the OLD stub's shape if Stub? is ticked
+    // again later, instead of Java's fresh 60px/0-degree seed.
+    t.stubLen = undefined;
+    t.stubAngle = undefined;
     const start = doc.states.find((s) => s.name === t.startState);
     const end = doc.states.find((s) => s.name === t.endState);
     if (start && end) {
@@ -591,10 +631,8 @@ export function resizeState(doc: FzmDocument, index: number, width: number, heig
   // The State Properties dialog OK always calls this, even when Width/Height
   // weren't touched (they default to the current size) - without this guard a
   // pure equation/color/attribute edit would still run the re-route loop
-  // below, and its cross-page branch (recomputeCrossPage) is not
-  // delta-preserving: it re-docks pageS/pageSC/pageE/pageEC from the
-  // sibling-stagger formula, discarding a hand-dragged connector. Same no-op
-  // guard as reconnectTransition/reconnectLoopback.
+  // below, whose moveTransition branch can flip a curve it had no business
+  // touching. Same no-op guard as reconnectTransition/reconnectLoopback.
   if (w === s.x1 - s.x0 && h === s.y1 - s.y0) return;
   s.x1 = s.x0 + w;
   s.y1 = s.y0 + h;
@@ -608,7 +646,10 @@ export function resizeState(doc: FzmDocument, index: number, width: number, heig
       const a = byName.get(t.startState);
       const b = byName.get(t.endState);
       if (a && b) {
-        if (a.page !== b.page) recomputeCrossPage(doc, t);
+        // A resize is a geometry change, not a topology change - the connector
+        // rides along with the border anchor rather than re-docking (see
+        // translateCrossPage).
+        if (a.page !== b.page) translateCrossPage(t, a, b);
         else moveTransition(t, a, b);
       }
     }
@@ -684,6 +725,8 @@ export function reconnectTransition(doc: FzmDocument, index: number, startName: 
     t.startStateIndex = geo.startStateIndex;
     t.startPt = geo.startPt;
     t.pageS = geo.pageS;
+    t.stubLen = geo.stubLen;
+    t.stubAngle = geo.stubAngle;
   } else if (start.page !== end.page) {
     recomputeCrossPage(doc, t);
   } else {

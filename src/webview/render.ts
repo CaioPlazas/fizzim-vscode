@@ -5,6 +5,20 @@ const RESET_RING_OFFSET = 3;
 const ARROW_LENGTH = 13;
 const ARROW_ANGLE = Math.PI / 6; // 30 degrees, matches StateTransitionObj's arrowhead
 const HANDLE_SIZE = 7;
+// Zoom at the last render(). Handles are drawn in model units under a
+// zoom-scaled transform, so a fixed size grows with zoom while the grab
+// tolerance in main.ts (6/zoom) stays a constant number of screen pixels - at
+// 400% the handle looked 28px wide but only its middle 6px could be grabbed,
+// and at 25% it drew too small to aim at. Dividing by this keeps the drawn
+// handle the same size on screen at every zoom, so what you see is grabbable.
+let renderZoom = 1;
+
+// The zoom the canvas was last drawn at. hitTest.ts uses it to keep pick
+// tolerances a constant number of SCREEN pixels, the same way it already
+// depends on this module's font state to measure label boxes.
+export function currentZoom(): number {
+  return renderZoom;
+}
 
 export let TEXT_FONT = '11px Arial';
 // Canvas fillText draws from the alphabetic baseline: glyphs extend up by the
@@ -470,8 +484,9 @@ function drawCurve(ctx: CanvasRenderingContext2D, t: FzmTransition | FzmLoopback
 }
 
 function drawHandle(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+  const size = HANDLE_SIZE / renderZoom; // constant on screen; see renderZoom
   ctx.fillStyle = '#ff0000';
-  ctx.fillRect(x - HANDLE_SIZE / 2, y - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
+  ctx.fillRect(x - size / 2, y - size / 2, size, size);
 }
 
 function drawStateSelection(ctx: CanvasRenderingContext2D, s: FzmState): void {
@@ -536,6 +551,7 @@ export function render(
   // Model units -> device pixels. The buffer is zoom x dpr times the model size,
   // so drawing in model coordinates under this transform puts every stroke on a
   // real device pixel instead of a CSS pixel that then gets resampled.
+  renderZoom = opts.zoom || 1;
   const scale = opts.zoom * (opts.dpr ?? 1);
 
   // Paint the theme background over the whole (device-pixel) canvas, then draw

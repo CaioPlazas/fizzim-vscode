@@ -1,11 +1,21 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { adjustStubAnchor, adjustStubTip, createStubGeometry, getBorderPts, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition, restaggerCrossPage, translateTransitionOnly, updatePageConnectors } from './geometry';
+import { adjustStubAnchor, adjustStubTip, createStubGeometry, getBorderPts, moveTransition, recomputeCrossPage, recomputeLoopback, recomputeStub, recomputeTransition, restaggerCrossPage, translateCrossPage, translateTransitionOnly, updatePageConnectors } from './geometry';
 import { createTransition } from './edit';
 import { DEFAULT_PREFERENCES, FzmDocument, FzmLoopback, FzmState, FzmTransition, ObjAttribute } from '../fzm/model';
 
 function makeState(name: string, x0: number, y0: number, x1: number, y1: number): FzmState {
   return { name, x0, y0, x1, y1, reset: false, page: 1, color: -16777216, attributes: [] };
+}
+
+function makeStub(): FzmTransition {
+  return {
+    kind: 'transition', name: 'trans0', startState: 'A', endState: 'B',
+    startPt: { x: 0, y: 0 }, endPt: { x: 0, y: 0 }, startCtrlPt: { x: 0, y: 0 }, endCtrlPt: { x: 0, y: 0 },
+    startStateIndex: 0, endStateIndex: 0, page: 1, color: -16777216,
+    pageS: { x: 0, y: 0 }, pageSC: { x: 0, y: 0 }, pageE: { x: 0, y: 0 }, pageEC: { x: 0, y: 0 },
+    stub: true, attributes: [],
+  };
 }
 
 function globalAttr(name: string, value: string, visibility: number): ObjAttribute {
@@ -332,6 +342,75 @@ test('recomputeStub preserves a zero-length stub instead of snapping it to a 60p
   assert.deepEqual(t.pageS, t.startPt, 'zero-length stub stays zero-length after the state moves, not snapped to a 60px default');
 });
 
+// The reported v2.0.8 bug: Ctrl+A, then drag the whole group toward the right
+// border, and every stub arrow on it visibly shrank - "as if it were
+// compensating for the border". recomputeStub used to re-derive len/angle from
+// the previous call's already-Math.trunc'd pageS, so each of a drag's ~60
+// mousemove events per second fed a slightly-wrong vector into the next one.
+// The error never converged (shallow stubs lost ~1px per event, 45-60 degree
+// ones grew), so a long drag could erase a stub entirely. Java stores len/angle
+// and rebuilds pageS from them (StateTransitionObj.java:443-444), so its stubs
+// are rigid across any number of moves - which is what this asserts.
+test('a stub is rigid across hundreds of state moves, at every angle', () => {
+  for (const deg of [0, 10, 20, 30, 45, 60, 90, 135, 180, 225, 270, 315]) {
+    const s = makeState('A', 400, 400, 500, 500); // center (450,450), radius 50
+    const t = makeStub();
+    // Aim the tip at `deg` (screen Y grows downward, so negate the sine),
+    // ~110px from the center = a ~60px stub beyond the border.
+    const rad = (deg * Math.PI) / 180;
+    adjustStubTip(t, s, Math.round(450 + 110 * Math.cos(rad)), Math.round(450 - 110 * Math.sin(rad)));
+
+    // Settle once: a tip drag stores the CENTER->tip angle but pageS is
+    // rebuilt from the ANCHOR, so the first rebuild snaps the tip onto that
+    // radial by a pixel or two. Java does the same (its PAGES branch stores
+    // getAngle(pageS, realCenter), moveEndPts rebuilds off startPt). What must
+    // never change is everything after that.
+    recomputeStub(t, s);
+    const vec = { x: t.pageS.x - t.startPt.x, y: t.pageS.y - t.startPt.y };
+    const len0 = Math.hypot(vec.x, vec.y);
+    assert.ok(len0 > 40, `${deg}deg: sanity - stub should start out ~60px, got ${len0}`);
+
+    // 200 successive one-pixel moves, exactly what a slow drag right produces.
+    for (let i = 1; i <= 200; i++) {
+      const moved = makeState('A', 400 + i, 400, 500 + i, 500);
+      recomputeStub(t, moved);
+      assert.deepEqual(
+        { x: t.pageS.x - t.startPt.x, y: t.pageS.y - t.startPt.y },
+        vec,
+        `${deg}deg: stub vector must be identical after move ${i} (was ${JSON.stringify(vec)})`
+      );
+    }
+  }
+});
+
+test('a stub keeps its length when its state is resized, not just moved', () => {
+  const s = makeState('A', 400, 400, 500, 500);
+  const t = makeStub();
+  adjustStubTip(t, s, 560, 410); // a diagonal stub, the drift-prone case
+  recomputeStub(t, s); // settle onto the stored radial (see the test above)
+  const vec = { x: t.pageS.x - t.startPt.x, y: t.pageS.y - t.startPt.y };
+
+  for (let i = 1; i <= 50; i++) {
+    recomputeStub(t, makeState('A', 400, 400, 500 + i, 500 + i)); // grow the state
+    assert.deepEqual(
+      { x: t.pageS.x - t.startPt.x, y: t.pageS.y - t.startPt.y },
+      vec,
+      `stub vector must survive resize step ${i}`
+    );
+  }
+});
+
+test('a stub loaded from file derives len/angle once, then holds them', () => {
+  const t = makeStub();
+  t.startPt = { x: 100, y: 50 };
+  t.pageS = { x: 160, y: 50 }; // straight out of the parser: no stubLen/stubAngle
+  assert.equal(t.stubLen, undefined);
+
+  recomputeStub(t, makeState('A', 0, 0, 100, 100));
+  assert.equal(t.stubLen, 60, 'length derived from the file\'s own anchor->tip vector');
+  assert.equal(Math.abs(t.stubAngle!), 0, 'a due-east stub reads as angle 0');
+});
+
 // F15: dragging the stub's anchor around the state's border used to just
 // translate the tip by the border-point delta, preserving the old absolute
 // direction - so dragging the anchor from the right side to the left left
@@ -461,6 +540,48 @@ test('recomputeCrossPage docks the connector to the page edges and squares off t
   assert.equal(t.pageEC.x, 70);
   assert.equal(t.startCtrlPt.x, t.startPt.x + 20);
   assert.equal(t.endCtrlPt.x, t.endPt.x - 20);
+});
+
+// Companion to the stub-rigidity test above. recomputeCrossPage welds pageS to
+// pageSizeW-50, and updateAttachedTransitions used to run it on every state-move
+// frame - so dragging a state toward the right border left the pentagon behind
+// and collapsed the connector. Java gets away with that because its canvas is
+// hard-clamped to the page; this port isn't, so a plain move translates instead.
+test('translateCrossPage moves the whole connector with the state, past the page edge', () => {
+  const a = makeState('A', 0, 0, 100, 100);
+  const b = makeState('B', 300, 0, 400, 100);
+  b.page = 2;
+  const doc = docWith([a, b]);
+  const t = createTransition(doc, a, b, 1);
+  recomputeCrossPage(doc, t);
+  const before = { pageS: { ...t.pageS }, pageSC: { ...t.pageSC }, startPt: { ...t.startPt } };
+  const gapS = { x: t.pageS.x - t.startPt.x, y: t.pageS.y - t.startPt.y };
+  const gapE = { x: t.pageE.x - t.endPt.x, y: t.pageE.y - t.endPt.y };
+
+  // Shove A far past the right page edge, the exact gesture that used to
+  // collapse the connector.
+  const dx = doc.preferences.pageSizeW + 200;
+  translateCrossPage(t, makeState('A', dx, 0, dx + 100, 100), b);
+
+  assert.equal(t.startPt.x, before.startPt.x + dx, 'anchor follows the state');
+  assert.equal(t.pageS.x, before.pageS.x + dx, 'pentagon travels with it');
+  assert.equal(t.pageSC.x, before.pageSC.x + dx);
+  assert.ok(t.pageS.x > doc.preferences.pageSizeW, 'and is allowed off the page, to be cut off');
+  assert.deepEqual({ x: t.pageS.x - t.startPt.x, y: t.pageS.y - t.startPt.y }, gapS, 'connector keeps its exact shape');
+  assert.deepEqual({ x: t.pageE.x - t.endPt.x, y: t.pageE.y - t.endPt.y }, gapE, 'the far side is untouched by a near-side move');
+});
+
+test('updatePageConnectors still re-docks a travelled connector, so Page Setup / Fit Page repairs it', () => {
+  const a = makeState('A', 0, 0, 100, 100);
+  const b = makeState('B', 300, 0, 400, 100);
+  b.page = 2;
+  const doc = docWith([a, b]);
+  const t = createTransition(doc, a, b, 1);
+  translateCrossPage(t, makeState('A', 900, 0, 1000, 100), b);
+  assert.ok(t.pageS.x > doc.preferences.pageSizeW);
+
+  updatePageConnectors(doc);
+  assert.equal(t.pageS.x, doc.preferences.pageSizeW - 50, 'back on the page edge');
 });
 
 test('two cross-page transitions sharing a start state are staggered apart at the page edge', () => {
